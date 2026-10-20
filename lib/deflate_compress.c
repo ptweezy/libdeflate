@@ -2523,6 +2523,15 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 }
 
 /*
+ * The number of hops per link in the hash chains matchfinder (see hc_link_t)
+ * to use in the greedy and lazy compressors.  Multi-hop links make searching
+ * faster but inserting slower, so they pay off only for the deeper searches
+ * done by the lazy compressors.  The choice doesn't affect the output.
+ */
+#define GREEDY_HC_HOPS	1
+#define LAZY_HC_HOPS	HC_MATCHFINDER_MAX_HOPS
+
+/*
  * This is the "greedy" DEFLATE compressor. It always chooses the longest match.
  */
 static void
@@ -2568,7 +2577,8 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 						nice_len,
 						c->max_search_depth,
 						next_hashes,
-						&offset);
+						&offset,
+						GREEDY_HC_HOPS);
 
 			if (length >= min_len &&
 			    (length > DEFLATE_MIN_MATCH_LEN ||
@@ -2581,7 +2591,8 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 							  in_next + 1,
 							  in_end,
 							  length - 1,
-							  next_hashes);
+							  next_hashes,
+							  GREEDY_HC_HOPS);
 				in_next += length;
 			} else {
 				/* No match found */
@@ -2662,7 +2673,8 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 						nice_len,
 						c->max_search_depth,
 						next_hashes,
-						&cur_offset);
+						&cur_offset,
+						LAZY_HC_HOPS);
 			if (cur_len < min_len ||
 			    (cur_len == DEFLATE_MIN_MATCH_LEN &&
 			     cur_offset > 8192)) {
@@ -2686,7 +2698,8 @@ have_cur_match:
 							  in_next,
 							  in_end,
 							  cur_len - 1,
-							  next_hashes);
+							  next_hashes,
+							  LAZY_HC_HOPS);
 				in_next += cur_len - 1;
 				continue;
 			}
@@ -2718,7 +2731,8 @@ have_cur_match:
 						nice_len,
 						c->max_search_depth >> 1,
 						next_hashes,
-						&next_offset);
+						&next_offset,
+						LAZY_HC_HOPS);
 			if (next_len >= cur_len &&
 			    4 * (int)(next_len - cur_len) +
 			    ((int)bsr32(cur_offset) -
@@ -2748,7 +2762,8 @@ have_cur_match:
 						nice_len,
 						c->max_search_depth >> 2,
 						next_hashes,
-						&next_offset);
+						&next_offset,
+						LAZY_HC_HOPS);
 				if (next_len >= cur_len &&
 				    4 * (int)(next_len - cur_len) +
 				    ((int)bsr32(cur_offset) -
@@ -2777,7 +2792,8 @@ have_cur_match:
 								  in_next,
 								  in_end,
 								  cur_len - 3,
-								  next_hashes);
+								  next_hashes,
+								  LAZY_HC_HOPS);
 					in_next += cur_len - 3;
 				}
 			} else { /* !lazy2 */
@@ -2792,7 +2808,8 @@ have_cur_match:
 							  in_next,
 							  in_end,
 							  cur_len - 2,
-							  next_hashes);
+							  next_hashes,
+							  LAZY_HC_HOPS);
 				in_next += cur_len - 2;
 			}
 			/* Check if it's time to output another block. */
