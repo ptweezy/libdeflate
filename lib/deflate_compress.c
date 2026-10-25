@@ -3358,6 +3358,7 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 			u32 offset_slot;
 			u32 offset_cost;
 			u32 cost_to_end;
+			u32 best_item = cur_node->item;
 
 			/*
 			 * Consider each length from the minimum
@@ -3372,22 +3373,32 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 			match = cache_ptr - num_matches;
 			len = DEFLATE_MIN_MATCH_LEN;
 			do {
+				u32 offset_bits;
+
 				offset = match->offset;
 				offset_slot = c->p.n.offset_slot_full[offset];
 				offset_cost =
 					c->p.n.costs.offset_slot[offset_slot];
+				offset_bits = offset << OPTIMUM_OFFSET_SHIFT;
 				do {
+					bool better;
+
 					cost_to_end = offset_cost +
 						c->p.n.costs.length[len] +
 						(cur_node + len)->cost_to_end;
-					if (cost_to_end < best_cost_to_end) {
-						best_cost_to_end = cost_to_end;
-						cur_node->item = len |
-							(offset <<
-							 OPTIMUM_OFFSET_SHIFT);
-					}
+					/*
+					 * Whether this is the best choice so
+					 * far is hard to predict, so update the
+					 * best choice without branching.
+					 */
+					better = cost_to_end < best_cost_to_end;
+					best_cost_to_end = better ?
+						cost_to_end : best_cost_to_end;
+					best_item = better ?
+						(len | offset_bits) : best_item;
 				} while (++len <= match->length);
 			} while (++match != cache_ptr);
+			cur_node->item = best_item;
 			cache_ptr -= num_matches;
 		}
 		cur_node->cost_to_end = best_cost_to_end;
