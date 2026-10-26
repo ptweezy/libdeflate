@@ -817,8 +817,6 @@ heap_sort(u32 A[], unsigned length)
 #define SYMBOL_MASK	((1 << NUM_SYMBOL_BITS) - 1)
 #define FREQ_MASK	(~SYMBOL_MASK)
 
-#define GET_NUM_COUNTERS(num_syms)	(num_syms)
-
 /*
  * Sort the symbols primarily by frequency and secondarily by symbol value.
  * Discard symbols with zero frequency and fill in an array with the remaining
@@ -834,8 +832,8 @@ heap_sort(u32 A[], unsigned length)
  *
  * @lens[num_syms]
  *	An array that eventually will hold the length of each codeword.  This
- *	function only fills in the codeword lengths for symbols that have zero
- *	frequency, which are not well defined per se but will be set to 0.
+ *	function sets all the codeword lengths to 0.  For symbols that have zero
+ *	frequency, the lengths are not well defined per se but will stay 0.
  *
  * @symout[num_syms]
  *	The output array, described above.
@@ -850,52 +848,52 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 	unsigned i;
 	unsigned num_used_syms;
 	unsigned num_counters;
-	unsigned counters[GET_NUM_COUNTERS(DEFLATE_MAX_NUM_SYMS)];
+	unsigned offset;
+	unsigned counters[DEFLATE_MAX_NUM_SYMS + 1];
+	u32 used[DEFLATE_MAX_NUM_SYMS];
 
 	/*
-	 * We use heapsort, but with an added optimization.  Since often most
-	 * symbol frequencies are low, we first do a count sort using a limited
-	 * number of counters.  High frequencies are counted in the last
-	 * counter, and only they will be sorted with heapsort.
-	 *
-	 * Note: with more symbols, it is generally beneficial to have more
-	 * counters.  About 1 counter per symbol seems fastest.
+	 * Gather the symbols that have nonzero frequency, along with their
+	 * frequencies.  Do it without branching, since whether each symbol is
+	 * used is hard to predict.  Then sort only those symbols.  That's faster
+	 * than sorting all the symbols, especially for small blocks, in which
+	 * most symbols tend to be unused.
 	 */
-
-	num_counters = GET_NUM_COUNTERS(num_syms);
-
-	memset(counters, 0, num_counters * sizeof(counters[0]));
-
-	/* Count the frequencies. */
-	for (sym = 0; sym < num_syms; sym++)
-		counters[MIN(freqs[sym], num_counters - 1)]++;
-
-	/*
-	 * Make the counters cumulative, ignoring the zero-th, which counted
-	 * symbols with zero frequency.  As a side effect, this calculates the
-	 * number of symbols with nonzero frequency.
-	 */
+	memset(lens, 0, num_syms);
 	num_used_syms = 0;
-	for (i = 1; i < num_counters; i++) {
-		unsigned count = counters[i];
-
-		counters[i] = num_used_syms;
-		num_used_syms += count;
-	}
-
-	/*
-	 * Sort nonzero-frequency symbols using the counters.  At the same time,
-	 * set the codeword lengths of zero-frequency symbols to 0.
-	 */
 	for (sym = 0; sym < num_syms; sym++) {
 		u32 freq = freqs[sym];
 
-		if (freq != 0) {
-			symout[counters[MIN(freq, num_counters - 1)]++] =
-				sym | (freq << NUM_SYMBOL_BITS);
-		} else {
-			lens[sym] = 0;
-		}
+		used[num_used_syms] = sym | (freq << NUM_SYMBOL_BITS);
+		num_used_syms += (freq != 0);
+	}
+	if (num_used_syms == 0)
+		return 0;
+
+	/*
+	 * Sort the used symbols by frequency.  We use heapsort, but with an
+	 * added optimization.  Since often most symbol frequencies are low, we
+	 * first do a count sort using a limited number of counters.  High
+	 * frequencies are counted in the last counter, and only they will be
+	 * sorted with heapsort.  About 1 counter per symbol seems fastest.
+	 * (counters[0] is unused, since all frequencies are nonzero.)
+	 */
+	num_counters = num_used_syms + 1;
+	memset(counters, 0, num_counters * sizeof(counters[0]));
+	for (i = 0; i < num_used_syms; i++)
+		counters[MIN(used[i] >> NUM_SYMBOL_BITS, num_counters - 1)]++;
+	offset = 0;
+	for (i = 1; i < num_counters; i++) {
+		unsigned count = counters[i];
+
+		counters[i] = offset;
+		offset += count;
+	}
+	for (i = 0; i < num_used_syms; i++) {
+		u32 entry = used[i];
+
+		symout[counters[MIN(entry >> NUM_SYMBOL_BITS,
+				    num_counters - 1)]++] = entry;
 	}
 
 	/* Sort the symbols counted in the last counter. */
