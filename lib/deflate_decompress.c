@@ -272,13 +272,18 @@ do {									\
 } while (0)
 
 /*
- * This is the worst-case maximum number of output bytes that are written to
- * during each iteration of the fastloop.  The worst case is 2 literals, then a
- * match of length DEFLATE_MAX_MATCH_LEN.  Additionally, some slack space must
- * be included for the intentional overrun in the match copy implementation.
+ * This is the maximum number of literal bytes that are written during each
+ * iteration of the fastloop: either 3 literals, or 2 literals followed by a
+ * match.  Matches aren't included, since the fastloop checks each match against
+ * the remaining output space before copying it.
  */
-#define FASTLOOP_MAX_BYTES_WRITTEN	\
-	(2 + DEFLATE_MAX_MATCH_LEN + (5 * WORDBYTES) - 1)
+#define FASTLOOP_MAX_LITERAL_BYTES_WRITTEN	3
+
+/*
+ * This is the maximum number of bytes past the end of a match that the
+ * fastloop's match copy implementation may write to (intentionally).
+ */
+#define FASTLOOP_MAX_MATCH_OVERRUN	((5 * WORDBYTES) - 1)
 
 /*
  * This is the worst-case maximum number of input bytes that are read during

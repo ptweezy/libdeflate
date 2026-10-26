@@ -50,7 +50,10 @@ FUNCNAME(struct libdeflate_decompressor * restrict d,
 	u8 *out_next = out;
 	u8 * const out_end = out_next + out_nbytes_avail;
 	u8 * const out_fastloop_end =
-		out_end - MIN(out_nbytes_avail, FASTLOOP_MAX_BYTES_WRITTEN);
+		out_end - MIN(out_nbytes_avail,
+			      FASTLOOP_MAX_LITERAL_BYTES_WRITTEN);
+	u8 * const out_fastcopy_end =
+		out_end - MIN(out_nbytes_avail, FASTLOOP_MAX_MATCH_OVERRUN);
 
 	/* Input bitstream state; see deflate_decompress.c for documentation */
 	const u8 *in_next = in;
@@ -374,8 +377,9 @@ have_decode_tables:
 			 * with the branch prediction of the conditional refill
 			 * that happens later while decoding the match offset).
 			 *
-			 * Note: the definitions of FASTLOOP_MAX_BYTES_WRITTEN
-			 * and FASTLOOP_MAX_BYTES_READ need to be updated if the
+			 * Note: the definitions of
+			 * FASTLOOP_MAX_LITERAL_BYTES_WRITTEN and
+			 * FASTLOOP_MAX_BYTES_READ need to be updated if the
 			 * number of extra literals decoded here is changed.
 			 */
 			if (/* enough bits for 2 fast literals + length + offset preload? */
@@ -487,10 +491,9 @@ have_decode_tables:
 		 * with the litlen symbol (which we extract from the decode
 		 * table entry), plus the extra length bits.  We don't need to
 		 * consume the extra length bits here, as they were included in
-		 * the bits consumed by the entry earlier.  We also don't need
-		 * to check for too-long matches here, as this is inside the
-		 * fastloop where it's already been verified that the output
-		 * buffer has enough space remaining to copy a max-length match.
+		 * the bits consumed by the entry earlier.  Whether the match
+		 * fits in the output buffer is checked later, just before it's
+		 * copied.
 		 */
 		length = entry >> 16;
 		length += EXTRACT_VARBITS8(saved_bitbuf, entry) >> (u8)(entry >> 8);
@@ -572,6 +575,21 @@ have_decode_tables:
 		REFILL_BITS_IN_FASTLOOP();
 
 		/*
+		 * If there might not be enough output space left for the match
+		 * plus the copy overrun, which can only happen near the end of
+		 * the output buffer, copy the match a byte at a time instead
+		 * (after checking that it fits at all).
+		 */
+		if (unlikely((ptrdiff_t)length > out_fastcopy_end - dst)) {
+			if (unlikely(length > out_end - dst))
+				return LIBDEFLATE_INSUFFICIENT_SPACE;
+			do {
+				*dst++ = *src++;
+			} while (dst < out_next);
+			continue;
+		}
+
+		/*
 		 * Copy the match.  On most CPUs the fastest method is a
 		 * word-at-a-time copy, unconditionally copying about 5 words
 		 * since this is enough for most matches without being too much.
@@ -584,7 +602,7 @@ have_decode_tables:
 		 *
 		 * Writing past the match 'length' is allowed here, since it's
 		 * been ensured there is enough output space left for a slight
-		 * overrun.  FASTLOOP_MAX_BYTES_WRITTEN needs to be updated if
+		 * overrun.  FASTLOOP_MAX_MATCH_OVERRUN needs to be updated if
 		 * the maximum possible overrun here is changed.
 		 */
 		if (UNALIGNED_ACCESS_IS_FAST && offset >= WORDBYTES) {
