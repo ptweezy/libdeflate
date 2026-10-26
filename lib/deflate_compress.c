@@ -497,8 +497,9 @@ struct libdeflate_compressor {
 			u32 freqs[DEFLATE_NUM_PRECODE_SYMS];
 			u32 codewords[DEFLATE_NUM_PRECODE_SYMS];
 			u8 lens[DEFLATE_NUM_PRECODE_SYMS];
+			/* +2 for deflate_compute_precode_items() */
 			unsigned items[DEFLATE_NUM_LITLEN_SYMS +
-				       DEFLATE_NUM_OFFSET_SYMS];
+				       DEFLATE_NUM_OFFSET_SYMS + 2];
 			unsigned num_litlen_syms;
 			unsigned num_offset_syms;
 			unsigned num_explicit_lens;
@@ -1498,11 +1499,25 @@ deflate_compute_precode_items(const u8 lens[], const unsigned num_lens,
 		/* len = the length being repeated */
 		len = lens[run_start];
 
-		/* Extend the run. */
-		run_end = run_start;
-		do {
-			run_end++;
-		} while (run_end != num_lens && len == lens[run_end]);
+		/* Extend the run, a word at a time when possible. */
+		run_end = run_start + 1 +
+			  lz_extend(&lens[run_start + 1], &lens[run_start], 0,
+				    num_lens - run_start - 1);
+
+		/*
+		 * Output a run that's too short for RLE (< 3 zeroes or < 4 of a
+		 * nonzero length) without branching.  This always stores 3
+		 * items, so the items array has 2 extra entries.
+		 */
+		if (run_end - run_start < 3 + (len != 0)) {
+			itemptr[0] = len;
+			itemptr[1] = len;
+			itemptr[2] = len;
+			itemptr += run_end - run_start;
+			precode_freqs[len] += run_end - run_start;
+			run_start = run_end;
+			continue;
+		}
 
 		if (len == 0) {
 			/* Run of zeroes. */
