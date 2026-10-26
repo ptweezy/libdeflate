@@ -730,6 +730,8 @@ build_decode_table(u32 decode_table[],
 {
 	unsigned len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
 	unsigned offsets[DEFLATE_MAX_CODEWORD_LEN + 1];
+	unsigned part_counts[4][DEFLATE_MAX_CODEWORD_LEN + 1];
+	const unsigned part_len = num_syms / 4;
 	unsigned sym;		/* current symbol */
 	unsigned codeword;	/* current codeword, bit-reversed */
 	unsigned len;		/* current codeword length in bits */
@@ -740,11 +742,27 @@ build_decode_table(u32 decode_table[],
 	unsigned subtable_start;  /* start index of current subtable */
 	unsigned subtable_bits;   /* log2 of current subtable length */
 
-	/* Count how many codewords have each length, including 0. */
+	/*
+	 * Count how many codewords have each length, including 0.
+	 *
+	 * Consecutive symbols often have the same length, which would make a
+	 * simple counting loop a long chain of dependent increments of the same
+	 * counter.  To avoid that, split the symbols into 4 contiguous parts
+	 * (the last one also gets any remainder), and count the parts
+	 * separately in an interleaved way.
+	 */
+	memset(part_counts, 0, sizeof(part_counts));
+	for (sym = 0; sym < part_len; sym++) {
+		part_counts[0][lens[sym]]++;
+		part_counts[1][lens[part_len + sym]]++;
+		part_counts[2][lens[2 * part_len + sym]]++;
+		part_counts[3][lens[3 * part_len + sym]]++;
+	}
+	for (sym = 4 * part_len; sym < num_syms; sym++)
+		part_counts[3][lens[sym]]++;
 	for (len = 0; len <= max_codeword_len; len++)
-		len_counts[len] = 0;
-	for (sym = 0; sym < num_syms; sym++)
-		len_counts[lens[sym]]++;
+		len_counts[len] = part_counts[0][len] + part_counts[1][len] +
+				  part_counts[2][len] + part_counts[3][len];
 
 	/*
 	 * Determine the actual maximum codeword length that was used, and
@@ -780,10 +798,34 @@ build_decode_table(u32 decode_table[],
 	}
 	codespace_used = (codespace_used << 1) + len_counts[len];
 
-	for (sym = 0; sym < num_syms; sym++)
-		sorted_syms[offsets[lens[sym]]++] = sym;
+	/*
+	 * Sort the parts in an interleaved way too.  For each length, each
+	 * part's symbols go right after the previous part's.  part_counts[] is
+	 * reused to hold each part's offsets.
+	 */
+	for (len = 0; len <= max_codeword_len; len++) {
+		unsigned offset = offsets[len];
+		unsigned i;
 
-	sorted_syms += offsets[0]; /* Skip unused symbols */
+		for (i = 0; i < 4; i++) {
+			count = part_counts[i][len];
+			part_counts[i][len] = offset;
+			offset += count;
+		}
+	}
+	for (sym = 0; sym < part_len; sym++) {
+		sorted_syms[part_counts[0][lens[sym]]++] = sym;
+		sorted_syms[part_counts[1][lens[part_len + sym]]++] =
+			part_len + sym;
+		sorted_syms[part_counts[2][lens[2 * part_len + sym]]++] =
+			2 * part_len + sym;
+		sorted_syms[part_counts[3][lens[3 * part_len + sym]]++] =
+			3 * part_len + sym;
+	}
+	for (sym = 4 * part_len; sym < num_syms; sym++)
+		sorted_syms[part_counts[3][lens[sym]]++] = sym;
+
+	sorted_syms += len_counts[0]; /* Skip unused symbols */
 
 	/* lens[] is done being used, so we can write to decode_table[] now. */
 
