@@ -49,57 +49,75 @@
  * That is, its low 9 (OPTIMUM_OFFSET_SHIFT in the code) bits contain the
  * length, and its high 23 bits contain the length's cost.
  *
- * Then, in 'cost_to_end' we store a shifted cost, using the high 23 bits only:
+ * Then, in 'cost_to_end[j]' we store the minimum cost to reach end-of-block
+ * from position 'j' shifted left by 9, using the high 23 bits only:
  *
- *	cost << 9
+ *	cost[j] << 9
  *
- * To consider multiple lengths (with the same offset), we just sum the
- * corresponding 'length_costs' and 'cost_to_end' entries, giving:
+ * To consider multiple lengths (with the same offset) at position 'i', we just
+ * sum the corresponding 'length_costs[len]' and 'cost_to_end[i + len]' entries,
+ * giving:
  *
- *	len | ((cost_to_end + c->p.n.costs.length[len]) << 9)
+ *	len | ((cost[i + len] + c->p.n.costs.length[len]) << 9)
  *
  * ... and then take the minimum of those to get:
  *
- *	best_len | (best_cost_to_end << 9)
+ *	best_len | (best_cost << 9)
  *
  * This vectorizes well and results in a 'u32' that has both the best cost and
  * the length that gave that cost, without needing to track them separately.
  *
  * However, this scheme gives only 23 bits for the cost, which isn't enough for
  * the entire block.  (In theory, a block's cost can reach 'MAX_BLOCK_LENGTH *
- * MAX_LITLEN_CODEWORD_LEN * BIT_COST', needing just over 26 bits.)
+ * MAX_LITERAL_COST', needing just over 26 bits.)
  *
- * But 23 bits is more than sufficient for the *differences* in cost over a
- * window of length DEFLATE_MAX_MATCH_LEN.  (The limit there is
- * MAX_MATCH_SPAN_COST, which takes 16 bits.)  Therefore, we also maintain a
- * value 'base_cost'.  'base_cost' starts at 0.  Each time 'best_cost_to_end'
- * reaches REBASE_THRESHOLD (2^22, which is half of 2^23, leaving plenty of
- * room), we increment 'base_cost' by 'best_cost_to_end - REBASE_MARGIN' where
- * REBASE_MARGIN is 2^16 (chosen as the next power of 2 greater than
- * MAX_MATCH_SPAN_COST + MAX_LENGTH_COST), set 'best_cost_to_end' to
- * REBASE_MARGIN, and update the values in 'length_costs' to be:
+ * To solve this, we take advantage of the bounded local variation of cost[]:
+ * for any two positions a < b in the block (even far apart), 'cost[b] - cost[a]
+ * < MAX_MATCH_SPAN_COST', because the optimal path from 'a' cannot skip over
+ * [b, b + DEFLATE_MAX_MATCH_LEN - 1] and must land at some position in that
+ * range, which 'b' can also reach using fewer than DEFLATE_MAX_MATCH_LEN
+ * literals.  (MAX_MATCH_SPAN_COST takes 16 bits, far less than 23.)
+ *
+ * Therefore, we maintain a value 'base_cost' (initially 0) and track
+ * 'best_cost_to_end = cost[i] - base_cost'.  Each time 'best_cost_to_end' at
+ * some position 'r' reaches REBASE_THRESHOLD (2^22, half of 2^23), we increment
+ * 'base_cost' by 'best_cost_to_end - REBASE_MARGIN' (setting 'base_cost =
+ * cost[r] - REBASE_MARGIN') where REBASE_MARGIN is 2^16 (>=
+ * MAX_MATCH_SPAN_COST), set 'best_cost_to_end' to REBASE_MARGIN, and update the
+ * values in 'length_costs' to be:
  *
  *	len | (((c->p.n.costs.length[len] - base_cost) << 9) mod 2^32)
  *
- * This way, each time we sum length_costs[len] with cost_to_end[i + len] when
- * considering a match, we're really computing:
+ * This way, each time we sum length_costs[len] with cost_to_end[i + len] (mod
+ * 2^32) when considering a match at position 'i', we're computing:
  *
- *	len | ((cost_to_end + c->p.n.costs.length[len] - base_cost) << 9)
+ *	len | (((cost[i + len] + c->p.n.costs.length[len] -
+ *		 base_cost) mod 2^23) << 9)
  *
- * Taking the minimum of those values gives the minimum of 'cost_to_end +
+ * Taking the minimum of those values gives the minimum of 'cost[i + len] +
  * c->p.n.costs.length[len] - base_cost' mod 2^23, with ties broken by taking
- * the smaller length.  And since 'cost_to_end + c->p.n.costs.length[len] -
- * base_cost' never reaches 2^23 (since REBASE_THRESHOLD left plenty of room),
- * nor can it underflow (since REBASE_MARGIN left enough for
- * MAX_MATCH_SPAN_COST), the 'mod 2^23' makes no difference in the answer;
- * that's why it's safe to truncate the costs in cost_to_end[] to 23 bits.
+ * the smaller length.  And the 'mod 2^23' makes no difference because the
+ * unreduced value always lies in [0, 2^23):
+ *
+ *   - No underflow (< 0): after a rebase at 'r' (i < r), either 'i + len < r'
+ *     so 'cost[i + len] > cost[r] - MAX_MATCH_SPAN_COST' by the property above,
+ *     or 'r <= i + len < r + DEFLATE_MAX_MATCH_LEN' where the same bound holds
+ *     since 'r' can reach 'i + len' with < DEFLATE_MAX_MATCH_LEN literals.
+ *     Either way, 'cost[i + len] - base_cost > REBASE_MARGIN -
+ *     MAX_MATCH_SPAN_COST >= 0'.
+ *
+ *   - No overflow (>= 2^23): since 'i + 1 < i + len', the property above gives
+ *     'cost[i + len] < cost[i + 1] + MAX_MATCH_SPAN_COST'.  Since step 'i + 1'
+ *     left 'cost[i + 1] - base_cost < REBASE_THRESHOLD', adding
+ *     'c->p.n.costs.length[len]' stays below 'REBASE_THRESHOLD +
+ *     MAX_MATCH_SPAN_COST + MAX_LENGTH_COST < 2^23'.
  *
  * Note: the sentinel entries in cost_to_end[] past block_length also have their
  * cost set to REBASE_MARGIN, ensuring their cost is so high they are never
  * chosen.  (They can be reached only from the last DEFLATE_MAX_MATCH_LEN - 1
  * positions of the block.  No rebase can have occurred yet at those positions,
- * and choosing only literals from them costs less than MAX_MATCH_SPAN_COST,
- * which is less than REBASE_MARGIN.)
+ * and choosing only literals from them costs less than MAX_MATCH_SPAN_COST <=
+ * REBASE_MARGIN.)
  */
 static ATTRIBUTES void
 FUNCNAME(struct libdeflate_compressor *c, const u32 block_length,
@@ -110,10 +128,13 @@ FUNCNAME(struct libdeflate_compressor *c, const u32 block_length,
 	u32 length_costs[DEFLATE_MAX_MATCH_LEN + 1 + 7];
 	size_t i;
 
-	/* Initialize length_costs[] from c->p.n.costs.length. */
+	/*
+	 * Initialize length_costs[] from c->p.n.costs.length.  Disable loop
+	 * unrolling on clang to avoid excessive code size.
+	 */
 	STATIC_ASSERT(DEFLATE_MAX_MATCH_LEN <= OPTIMUM_LEN_MASK);
 #ifdef __clang__
-	#pragma clang loop unroll(disable)
+#  pragma clang loop unroll(disable)
 #endif
 	for (i = DEFLATE_MIN_MATCH_LEN; i <= DEFLATE_MAX_MATCH_LEN; i++)
 		length_costs[i] =
@@ -161,18 +182,23 @@ FUNCNAME(struct libdeflate_compressor *c, const u32 block_length,
 		 */
 		if (num_matches) {
 			const struct lz_match *match = cache_ptr - num_matches;
-			u32 len = DEFLATE_MIN_MATCH_LEN;
+			size_t len = DEFLATE_MIN_MATCH_LEN;
 
 			do {
 				u32 offset = match->offset;
 				u8 offset_slot = c->p.n.offset_slot_full[offset];
-				u32 match_len = match->length;
+				size_t match_len = match->length;
 				u32 best, cost_to_end;
 
 				/*
 				 * Consider matches at 'offset' with lengths
 				 * 'len' through 'match_len'.
 				 */
+				ASSERT(len >= DEFLATE_MIN_MATCH_LEN &&
+				       len <= match_len &&
+				       match_len <= DEFLATE_MAX_MATCH_LEN &&
+				       i + match_len + 7 <
+					       ARRAY_LEN(c->p.n.cost_to_end));
 				best = deflate_consider_match(
 						&c->p.n.cost_to_end[i],
 						length_costs, len, match_len);
@@ -200,21 +226,21 @@ FUNCNAME(struct libdeflate_compressor *c, const u32 block_length,
 		 * Increment base_cost if best_cost_to_end has gotten too close
 		 * to 2^23.  See this function's comment.
 		 */
-		STATIC_ASSERT(REBASE_MARGIN > MAX_MATCH_SPAN_COST +
-			      MAX_LENGTH_COST);
+		STATIC_ASSERT(REBASE_MARGIN >= MAX_MATCH_SPAN_COST);
 		STATIC_ASSERT(REBASE_MARGIN < REBASE_THRESHOLD);
 		STATIC_ASSERT(REBASE_THRESHOLD + MAX_MATCH_SPAN_COST +
 			      MAX_LENGTH_COST <
 			      ((u32)1 << (32 - OPTIMUM_OFFSET_SHIFT)));
 		if (unlikely(best_cost_to_end >= REBASE_THRESHOLD)) {
 			u32 delta = best_cost_to_end - REBASE_MARGIN;
-			u32 len;
+			size_t len;
 
 			best_cost_to_end = REBASE_MARGIN;
 			base_cost += delta;
 			delta <<= OPTIMUM_OFFSET_SHIFT;
+			/* Disable unrolling on clang to avoid code bloat. */
 #ifdef __clang__
-			#pragma clang loop unroll(disable)
+#  pragma clang loop unroll(disable)
 #endif
 			for (len = DEFLATE_MIN_MATCH_LEN;
 			     len <= DEFLATE_MAX_MATCH_LEN; len++)

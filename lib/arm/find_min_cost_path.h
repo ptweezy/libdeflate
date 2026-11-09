@@ -30,7 +30,7 @@
 
 #include "cpu_features.h"
 
-#if HAVE_NEON_INTRIN && CPU_IS_LITTLE_ENDIAN()
+#if defined(ARCH_ARM64) && HAVE_NEON_INTRIN && CPU_IS_LITTLE_ENDIAN()
 
 #if HAVE_NEON_NATIVE
 #  define ATTRIBUTES
@@ -101,6 +101,6 @@ deflate_consider_match_neon(const u32 *cost_to_end, const u32 *length_costs,
 #define deflate_consider_match_simd	deflate_consider_match_neon
 #define have_consider_match_simd()	HAVE_NEON(get_arm_cpu_features())
 
-#endif /* HAVE_NEON_INTRIN && CPU_IS_LITTLE_ENDIAN() */
+#endif /* defined(ARCH_ARM64) && HAVE_NEON_INTRIN && CPU_IS_LITTLE_ENDIAN() */
 
 #endif /* LIB_ARM_FIND_MIN_COST_PATH_H */
