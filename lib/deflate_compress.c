@@ -1634,11 +1634,39 @@ deflate_compute_precode_items(const u8 lens[], const unsigned num_lens,
 		/* len = the length being repeated */
 		len = lens[run_start];
 
+		/*
+		 * Most lengths don't start a run that is long enough for RLE,
+		 * i.e. 3 zeroes or 4 of a nonzero length.  If unaligned memory
+		 * accesses are fast, check for that using a 32-bit word, and
+		 * output such a length right away.  This is faster than
+		 * extending its run first, since the many short runs make the
+		 * loops below hard to predict.
+		 */
+		run_end = run_start + 1;
+		if (UNALIGNED_ACCESS_IS_FAST && num_lens - run_start >= 4) {
+			/*
+			 * Byte i of v is 0 iff lens[run_start + i] == len.  The
+			 * bytes are combined explicitly, since MSVC doesn't
+			 * inline the memcpy() in get_unaligned_le32() when
+			 * optimizing for size.
+			 */
+			const u8 *p = &lens[run_start];
+			u32 v = (((u32)p[3] << 24) | ((u32)p[2] << 16) |
+				 ((u32)p[1] << 8) | p[0]) ^ (len * 0x01010101U);
+
+			/* For zeroes, the 4th length doesn't matter. */
+			if ((v & (0xFFFFFFFF >> (8 * (len == 0)))) != 0) {
+				precode_freqs[len]++;
+				*itemptr++ = len;
+				run_start++;
+				continue;
+			}
+			run_end = run_start + 3;
+		}
+
 		/* Extend the run. */
-		run_end = run_start;
-		do {
+		while (run_end != num_lens && len == lens[run_end])
 			run_end++;
-		} while (run_end != num_lens && len == lens[run_end]);
 
 		if (len == 0) {
 			/* Run of zeroes. */
