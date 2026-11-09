@@ -1,0 +1,111 @@
+name: r8-ident
+# Test-only workflow; not for upstream.  It checks that the commits below the
+# one that adds it don't change libdeflate's output on platforms that can't be
+# tested locally.  See scripts/r8_ident/run.sh.
+on:
+  push:
+    branches: ['r8-ident*']
+  workflow_dispatch:
+    inputs:
+      only:
+        description: Regular expression selecting the jobs to run (default all)
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  inputs:
+    name: inputs and job matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+    - uses: actions/checkout@v6
+    - id: matrix
+      env:
+        ONLY: ${{ inputs.only }}
+      run: |
+        python3 scripts/r8_ident/matrix.py "$GITHUB_REF_NAME" "$ONLY" \
+          "$(git log -1 --format=%B)" | tee -a "$GITHUB_OUTPUT"
+    - name: Make the inputs
+      run: |
+        python3 scripts/r8_ident/mkin.py "$RUNNER_TEMP/in"
+        tar -cf r8-inputs.tar -C "$RUNNER_TEMP" in
+    - uses: actions/upload-artifact@v4
+      with:
+        name: r8-inputs
+        path: r8-inputs.tar
+        retention-days: 30
+
+  ident:
+    needs: inputs
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.inputs.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      R8_NAME: ${{ matrix.name }}
+      R8_CC: ${{ matrix.cc }}
+      R8_CFLAGS: ${{ matrix.cflags }}
+      R8_RUN: ${{ matrix.run }}
+      R8_LEVELS: ${{ matrix.levels }}
+      R8_UNIT: ${{ matrix.unit }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 8
+    - uses: actions/download-artifact@v4
+      with:
+        name: r8-inputs
+        path: ${{ runner.temp }}/r8_inputs
+    - name: Install packages
+      if: matrix.apt != ''
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ${{ matrix.apt }}
+    - uses: ilammy/msvc-dev-cmd@v1
+      if: matrix.vcarch != ''
+      with:
+        arch: ${{ matrix.vcarch }}
+    - name: Build, run and compare
+      shell: bash
+      env:
+        R8_INPUTS: ${{ runner.temp }}/r8_inputs/r8-inputs.tar
+      run: bash scripts/r8_ident/run.sh
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: r8-out-${{ matrix.name }}
+        path: ${{ runner.temp }}/r8_ident/artifact
+        retention-days: 30
+
+  summary:
+    needs: [inputs, ident]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: r8-out-*
+        path: out
+        merge-multiple: true
+    - name: Summarize
+      env:
+        MATRIX: ${{ needs.inputs.outputs.matrix }}
+      run: |
+        rc=0
+        python3 scripts/r8_ident/summary.py out "$MATRIX" > summary.md || rc=$?
+        cat summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+        exit $rc
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: r8-summary
+        path: summary.md
+        retention-days: 30
