@@ -1722,7 +1722,9 @@ deflate_compute_precode_items(const u8 lens[], const unsigned num_lens,
 		/* len = the length being repeated */
 		len = lens[run_start];
 
-		if (UNALIGNED_ACCESS_IS_FAST) {
+		/* Extend the run. */
+		run_end = run_start;
+		if (UNALIGNED_ACCESS_IS_FAST && num_lens - run_start >= 4) {
 			/*
 			 * Most lengths don't start a run that is long enough
 			 * for RLE, i.e. 3 zeroes or 4 of a nonzero length.
@@ -1732,46 +1734,31 @@ deflate_compute_precode_items(const u8 lens[], const unsigned num_lens,
 			 * since the many short runs make the loops below hard
 			 * to predict.
 			 *
-			 * The word is assembled from bytes, so this would work
-			 * anywhere.  But it has been measured only where
-			 * unaligned memory accesses are fast, so the existing
-			 * loop is kept elsewhere.
+			 * Byte i of v is 0 iff lens[run_start + i] == len.  The
+			 * word is assembled from bytes, since MSVC doesn't
+			 * inline the memcpy() in get_unaligned_le32() when
+			 * optimizing for size.  This hasn't been measured where
+			 * unaligned memory accesses are slow, so it isn't done
+			 * there.
 			 */
-			run_end = run_start + 1;
-			if (num_lens - run_start >= 4) {
-				/*
-				 * Byte i of v is 0 iff lens[run_start + i] ==
-				 * len.  The bytes are combined explicitly,
-				 * since MSVC doesn't inline the memcpy() in
-				 * get_unaligned_le32() when optimizing for
-				 * size.
-				 */
-				const u8 *p = &lens[run_start];
-				u32 v = (((u32)p[3] << 24) | ((u32)p[2] << 16) |
-					 ((u32)p[1] << 8) | p[0]) ^
-					(len * 0x01010101U);
+			const u8 *p = &lens[run_start];
+			u32 v = (((u32)p[3] << 24) | ((u32)p[2] << 16) |
+				 ((u32)p[1] << 8) | p[0]) ^ (len * 0x01010101U);
 
-				/* For zeroes, the 4th length doesn't matter. */
-				v &= 0xFFFFFFFF >> (8 * (len == 0));
-				if (v != 0) {
-					precode_freqs[len]++;
-					*itemptr++ = len;
-					run_start++;
-					continue;
-				}
-				run_end = run_start + 3;
+			/* For zeroes, the 4th length doesn't matter. */
+			v &= 0xFFFFFFFF >> (8 * (len == 0));
+			if (v != 0) {
+				precode_freqs[len]++;
+				*itemptr++ = len;
+				run_start++;
+				continue;
 			}
-
-			/* Extend the run. */
-			while (run_end != num_lens && len == lens[run_end])
-				run_end++;
-		} else {
-			/* Extend the run. */
-			run_end = run_start;
-			do {
-				run_end++;
-			} while (run_end != num_lens && len == lens[run_end]);
+			/* The run includes at least the first 3 lengths. */
+			run_end += 2;
 		}
+		do {
+			run_end++;
+		} while (run_end != num_lens && len == lens[run_end]);
 
 		if (len == 0) {
 			/* Run of zeroes. */
