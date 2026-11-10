@@ -870,7 +870,7 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 	unsigned num_used_syms;
 	unsigned num_counters;
 	unsigned offset;
-	u16 counters[GET_NUM_COUNTERS(DEFLATE_MAX_NUM_SYMS)];
+	unsigned counters[GET_NUM_COUNTERS(DEFLATE_MAX_NUM_SYMS)];
 
 	/*
 	 * We use heapsort, but with an added optimization.  Since often most
@@ -1323,7 +1323,7 @@ gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
 		next_codewords[len] =
 			(next_codewords[len - 1] + len_counts[len - 1]) << 1;
 
-	if (4 * num_used_syms <= num_syms) {
+	if (few_syms_used(num_used_syms, num_syms)) {
 		const u32 *used = &A[num_syms - num_used_syms];
 
 		/*
