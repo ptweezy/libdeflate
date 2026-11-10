@@ -1,0 +1,101 @@
+name: r13-msvc
+# Test-only: interleaved MSVC timing of fixed commits on hosted Windows
+# runners (scripts/r8_time/msab.py).  Not for upstream.
+on:
+  push:
+    branches: ['r13-msvc*']
+permissions:
+  contents: read
+concurrency:
+  group: r13-msvc-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # name ref pairs; m0b is a second build of m0 (measurement noise)
+  REFS: base 64c49ac m0 33f0c8c m0b 33f0c8c f1 a46e6ea f3 f4300bd
+  NAMES: base,m0,m0b,f1,f3
+  PAIRS: m0:m0b,base:m0,m0:f1,f1:f3,m0:f3
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/r8_time/inputs.sh "$RUNNER_TEMP/r8in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: r13-inputs
+        path: ${{ runner.temp }}/r8in
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+        set: [real, syn]
+        shard: [1, 2]
+        runner: [windows-2025]
+        include:
+        - {arch: arm64, set: real, shard: 1, runner: windows-11-arm}
+        - {arch: arm64, set: syn, shard: 1, runner: windows-11-arm}
+    name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 12
+    - uses: actions/download-artifact@v8
+      with:
+        name: r13-inputs
+        path: ${{ runner.temp }}/r8in
+    - name: Build
+      shell: cmd
+      run: call scripts\r8_time\msbuild.bat ${{ matrix.arch }} "%RUNNER_TEMP%\msb" %REFS%
+    - name: Time
+      shell: bash
+      env:
+        MSB_CPU: 2
+        SET: ${{ matrix.set }}
+      run: |
+        IN=$(cygpath -m "$RUNNER_TEMP/r8in")
+        BIN=$(cygpath -m "$RUNNER_TEMP/msb")
+        mkdir -p res
+        powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors" | tr '\r\n' '  ' > res/cpu.txt
+        cat res/cpu.txt; echo
+        if [ "$SET" = real ]; then
+          FILES="$IN/real/*"
+          CFGS=12:0,10:0,12:4096,12:16384,12:1024
+        else
+          FILES="$IN/syn/* $IN/adv/avoid241 $IN/adv/s5mix $IN/adv/rev140 $IN/adv/thr1k $IN/adv/thr4k $IN/adv/thr64k"
+          CFGS=12:0,10:0,12:4096,12:16384,10:16384
+        fi
+        python scripts/r8_time/msab.py "$BIN" 8 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-msvc-${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+        path: res
+        if-no-files-found: warn
+  aggregate:
+    needs: time
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: r13-msvc-*
+        path: res
+    - name: Aggregate
+      run: |
+        python3 scripts/r8_time/msagg.py res "$PAIRS" | tee summary.md
+        cat summary.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-msvc-summary
+        path: summary.md
