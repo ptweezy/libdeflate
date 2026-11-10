@@ -10,10 +10,14 @@ concurrency:
   group: r13-msvc-${{ github.ref }}
   cancel-in-progress: true
 env:
-  # name ref pairs; m0b is a second build of m0 (measurement noise)
-  REFS: base 64c49ac c1 2bfa239 m0 33f0c8c m0b 33f0c8c
-  NAMES: base,c1,m0,m0b
-  PAIRS: m0:m0b,base:c1,c1:m0,base:m0
+  # name ref pad triples (layout experiment): bN is 64c49ac and cN is 2bfa239,
+  # each with N bytes of unused code after deflate_find_min_cost_path.  c0
+  # already has every later function 16 bytes above b0, so b16/c0, b32/c16
+  # and b48/c32 are pairs with the same layout.
+  REFS: b0 64c49ac 0 b16 64c49ac 16 b32 64c49ac 32 b48 64c49ac 48 c0 2bfa239 0 c16 2bfa239 16 c32 2bfa239 32 c48 2bfa239 48
+  NAMES: b0,b16,b32,b48,c0,c16,c32,c48
+  EXPECT: b0:0,b16:16,b32:32,b48:48,c0:16,c16:32,c32:48,c48:64
+  PAIRS: b0:c0,b0:b16,b0:b32,b0:b48,c0:c16,c0:c32,c0:c48,b16:c0,b32:c16,b48:c32,b0:c48
 jobs:
   prep:
     runs-on: ubuntu-24.04
@@ -35,7 +39,7 @@ jobs:
       matrix:
         arch: [arm64]
         set: [real]
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
         runner: [windows-11-arm]
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
     runs-on: ${{ matrix.runner }}
@@ -62,6 +66,10 @@ jobs:
         mkdir -p res
         powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors" | tr '\r\n' '  ' > res/cpu.txt
         cat res/cpu.txt; echo
+        python scripts/r8_time/mslayout.py "$BIN" "$EXPECT" | tee res/layout.txt
+        test "${PIPESTATUS[0]}" = 0
+        cp "$BIN"/*.map res/
+        if [ "${{ matrix.shard }}" = 1 ]; then cp "$BIN"/*.dis res/; fi
         if [ "$SET" = real ]; then
           FILES="$IN/real/*"
           CFGS=12:0,10:0
