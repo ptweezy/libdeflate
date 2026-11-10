@@ -732,6 +732,8 @@ struct libdeflate_compressor {
 			 */
 			u32 max_len_to_optimize_static_block;
 
+			bool matches_rarely_win;
+
 		} n; /* (n)ear-optimal */
 	#endif /* SUPPORT_NEAR_OPTIMAL_PARSING */
 
@@ -3646,11 +3648,34 @@ deflate_min_packed_cost_default(const u32 *length_costs, const u32 *cost_to_end,
 	return best;
 }
 
+/*
+ * [prototype] Two forms of the best-match selection in the template: with a
+ * branch (SELECT_WITH_BRANCH=1, the original code) and without one.  clang
+ * compiles the branch to conditional moves already, so it gets one copy.
+ */
+#ifdef __clang__
+#  define SELECT_VARIANTS	0
+#else
+#  define SELECT_VARIANTS	1
+#endif
+#ifndef SELECT_MIN_BLOCK_LENGTH
+#define SELECT_MIN_BLOCK_LENGTH	4096
+#endif
+#define SELECT_LITERALS_PER_MATCH	16
+
 /* Define deflate_find_min_cost_path_default(). */
 #define FUNCNAME		deflate_find_min_cost_path_default
 #define ATTRIBUTES
 #define deflate_min_packed_cost	deflate_min_packed_cost_default
+#define SELECT_WITH_BRANCH	1
 #include "find_min_cost_path_template.h"
+#if SELECT_VARIANTS
+#define FUNCNAME		deflate_find_min_cost_path_default_nobranch
+#define deflate_min_packed_cost	deflate_min_packed_cost_default
+#define SELECT_WITH_BRANCH	0
+#include "find_min_cost_path_template.h"
+#endif
+#undef ATTRIBUTES
 
 /* Define deflate_find_min_cost_path_simd() if available. */
 #if defined(ARCH_ARM64)
@@ -3662,7 +3687,15 @@ deflate_min_packed_cost_default(const u32 *length_costs, const u32 *cost_to_end,
 #define FUNCNAME		deflate_find_min_cost_path_simd
 /* ATTRIBUTES comes from the arch header. */
 #define deflate_min_packed_cost	deflate_min_packed_cost_simd
+#define SELECT_WITH_BRANCH	1
 #include "find_min_cost_path_template.h"
+#if SELECT_VARIANTS
+#define FUNCNAME		deflate_find_min_cost_path_simd_nobranch
+#define deflate_min_packed_cost	deflate_min_packed_cost_simd
+#define SELECT_WITH_BRANCH	0
+#include "find_min_cost_path_template.h"
+#endif
+#undef ATTRIBUTES
 #endif
 
 /*
@@ -3719,6 +3752,18 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 	}
 
 	/* Call the function instantiated from find_min_cost_path_template.h. */
+#if SELECT_VARIANTS
+	if (!c->p.n.matches_rarely_win) {
+#ifdef deflate_min_packed_cost_simd
+		if (have_min_packed_cost_simd())
+			cost = deflate_find_min_cost_path_simd_nobranch(
+					c, block_length, cache_ptr);
+		else
+#endif
+			cost = deflate_find_min_cost_path_default_nobranch(
+					c, block_length, cache_ptr);
+	} else
+#endif
 #ifdef deflate_min_packed_cost_simd
 	if (have_min_packed_cost_simd())
 		cost = deflate_find_min_cost_path_simd(c, block_length,
@@ -3729,6 +3774,20 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 							  cache_ptr);
 	deflate_reset_symbol_frequencies(c);
 	deflate_tally_item_list(c, block_length);
+#if SELECT_VARIANTS
+	c->p.n.matches_rarely_win = false;
+	if (block_length >= SELECT_MIN_BLOCK_LENGTH) {
+		u32 num_literals = 0;
+		u32 num_matches = 0;
+
+		for (i = 0; i < DEFLATE_NUM_LITERALS; i++)
+			num_literals += c->freqs.litlen[i];
+		for (i = 0; i < ARRAY_LEN(c->freqs.offset); i++)
+			num_matches += c->freqs.offset[i];
+		c->p.n.matches_rarely_win =
+			num_matches < num_literals / SELECT_LITERALS_PER_MATCH;
+	}
+#endif
 	deflate_make_huffman_codes(&c->freqs, &c->codes);
 	return cost;
 }
@@ -3969,6 +4028,9 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 
 	bt_matchfinder_init(&c->p.n.bt_mf);
 	deflate_near_optimal_init_stats(c);
+#if SELECT_VARIANTS
+	c->p.n.matches_rarely_win = false;
+#endif
 
 	do {
 		/* Starting a new DEFLATE block */
