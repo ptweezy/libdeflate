@@ -921,12 +921,12 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 		 * since whether each symbol is used is hard to predict.  Then
 		 * sort just the used symbols using the counters.
 		 */
-		memset(lens, 0, num_syms);
 		sym = num_syms;
 		do {
 			sym--;
 			symout[n] = sym;
 			n -= (freqs[sym] != 0);
+			lens[sym] = 0;
 		} while (sym != 0);
 		/* The list exactly fills the last num_used_syms entries. */
 		ASSERT(n == num_syms - num_used_syms - 1);
@@ -1323,7 +1323,7 @@ gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
 		next_codewords[len] =
 			(next_codewords[len - 1] + len_counts[len - 1]) << 1;
 
-	if (few_syms_used(num_used_syms, num_syms)) {
+	if (4 * num_used_syms <= num_syms) {
 		const u32 *used = &A[num_syms - num_used_syms];
 
 		/*
