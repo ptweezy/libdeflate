@@ -3659,7 +3659,7 @@ deflate_min_packed_cost_default(const u32 *length_costs, const u32 *cost_to_end,
 #  define SELECT_VARIANTS	1
 #endif
 #ifndef SELECT_MIN_BLOCK_LENGTH
-#define SELECT_MIN_BLOCK_LENGTH	4096
+#define SELECT_MIN_BLOCK_LENGTH	8192
 #endif
 #define SELECT_LITERALS_PER_MATCH	16
 
