@@ -1,0 +1,13 @@
+# r8_time plan: locate the loss on rev140 (clang, EPYC 7763).  The six
+# commits under test are experiment variants of commit 1, not a series:
+#   f1 = V1  commit 1 with both list paths disabled (dense path only)
+#   f2 = V2  V1 + sort_symbols() list path; gen_codewords() over all symbols
+#   f3 = V3  commit 1
+#   f4 = V4  commit 1, lens[] zeroed with memset()
+#   f5 = V6  commit 1, gen_codewords() list path only if 4 * used <= syms
+#   f6 = V7  commit 1 with unsigned counters
+seedbase 5001
+series 6
+timeout 100
+group z3 ubuntu-24.04 c2 6 16 z3 12:1024:3:2 6:4096:3:2 1:1024:3:3 12:4096:3:2
+group z3 ubuntu-24.04 g2 2 16 z3 12:1024:3:2 6:4096:3:2 1:1024:3:3 12:4096:3:2
