@@ -3136,13 +3136,14 @@ deflate_tally_item_list(struct libdeflate_compressor *c, u32 block_length)
 		if (length == 1) {
 			/* Literal */
 			c->freqs.litlen[offset]++;
+			i++;
 		} else {
 			/* Match */
 			c->freqs.litlen[DEFLATE_FIRST_LEN_SYM +
 					deflate_length_slot[length]]++;
 			c->freqs.offset[c->p.n.offset_slot_full[offset]]++;
+			i += length;
 		}
-		i += length;
 	} while (i != block_length);
 
 	/* Tally the end-of-block symbol. */
