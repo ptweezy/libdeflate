@@ -1,0 +1,25 @@
+# r8_time plan for the review change to PR 478's commit 2 (base a8cac98):
+# f1 = commit 1, f2 = commit 2 as posted (word assembled from bytes),
+# f3 = commit 2 with get_unaligned_le32().  gcc compiles f2 and f3 to the
+# same code on x86-64, so gcc is here only as a control.
+seedbase 12001
+series 3
+timeout 120
+
+# 1. Small blocks, clang: real files, then the z3, adversarial and threshold
+#    inputs.
+group small ubuntu-24.04     c2 6 8  real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04-arm c2 2 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group z3    ubuntu-24.04     c2 6 16 z3 1:1024:3:3 12:1024:3:2 6:4096:3:2 12:4096:3:2
+group z3    ubuntu-24.04-arm c2 2 16 z3 1:1024:3:3 12:1024:3:2 6:4096:3:2 12:4096:3:2
+group adv   ubuntu-24.04     c2 4 8  adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04-arm c2 2 16 adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+
+# 2. gcc controls on the same cells.
+group small ubuntu-24.04     g2 2 8  real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04-arm g2 2 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group z3    ubuntu-24.04-arm g2 2 16 z3 1:1024:3:3 12:1024:3:2 6:4096:3:2 12:4096:3:2
+
+# 3. Large blocks with the validation controls: L1 and L6 on whole files.
+group big   ubuntu-24.04     c2 6 32 real 1:0:3:5:pos64+plc1 6:0:5:2:pos16+plc1
+group big   ubuntu-24.04-arm c2 4 32 real 1:0:3:5:pos48+plc1 6:0:5:2:pos12+plc1
