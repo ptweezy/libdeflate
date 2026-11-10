@@ -1,0 +1,33 @@
+# r8_time plan for the PR series on a8cac98: f1 = commit 1, f2 = commit 2 with
+# two loops, f3 = commit 2 with one loop.  Same cells as the round-11 plan.
+seedbase 9001
+series 3
+timeout 120
+
+# 1. The inputs that were slower on EPYC 7763 with round 10's commit 1.
+group z3    ubuntu-24.04     c2 6 16 z3 1:1024:3:3 12:1024:3:2 6:4096:3:2 12:4096:3:2
+group z3    ubuntu-24.04     g2 4 16 z3 1:1024:3:3 12:1024:3:2 6:4096:3:2 12:4096:3:2
+group z3    ubuntu-24.04-arm c2 2 16 z3 1:1024:3:3 12:1024:3:2 6:4096:3:2 12:4096:3:2
+group z3    ubuntu-24.04-arm g2 2 16 z3 1:1024:3:3 12:1024:3:2 6:4096:3:2 12:4096:3:2
+
+# 2. Small blocks: real files, then the adversarial and threshold alphabets.
+group small ubuntu-24.04     c2 6 8  real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04     g2 6 8  real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04     c2 6 8  adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04     g2 6 8  adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04-arm c2 2 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04-arm g2 2 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04-arm c2 2 16 adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04-arm g2 2 16 adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+
+# 3. Large blocks with the validation controls: L1 and L6 on whole files.
+group big   ubuntu-24.04     g2 6 32 real 1:0:3:5:pos64+plc1 6:0:5:2:pos16+plc1
+group big   ubuntu-24.04     c2 6 32 real 1:0:3:5:pos64+plc1 6:0:5:2:pos16+plc1
+group big   ubuntu-24.04-arm g2 4 32 real 1:0:3:5:pos48+plc1 6:0:5:2:pos12+plc1
+group big   ubuntu-24.04-arm c2 4 32 real 1:0:3:5:pos48+plc1 6:0:5:2:pos12+plc1
+
+# 4. L12 on whole files (slow).
+group l12   ubuntu-24.04     g2 6 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04     c2 6 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04-arm g2 4 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04-arm c2 4 16 real 12:0:5:1:plc2
