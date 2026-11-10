@@ -921,12 +921,12 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 		 * since whether each symbol is used is hard to predict.  Then
 		 * sort just the used symbols using the counters.
 		 */
+		memset(lens, 0, num_syms);
 		sym = num_syms;
 		do {
 			sym--;
 			symout[n] = sym;
 			n -= (freqs[sym] != 0);
-			lens[sym] = 0;
 		} while (sym != 0);
 		/* The list exactly fills the last num_used_syms entries. */
 		ASSERT(n == num_syms - num_used_syms - 1);
