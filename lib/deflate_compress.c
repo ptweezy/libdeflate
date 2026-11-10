@@ -1323,7 +1323,7 @@ gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
 		next_codewords[len] =
 			(next_codewords[len - 1] + len_counts[len - 1]) << 1;
 
-	if (0) {
+	if (few_syms_used(num_used_syms, num_syms)) {
 		const u32 *used = &A[num_syms - num_used_syms];
 
 		/*
