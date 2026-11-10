@@ -11,9 +11,9 @@ concurrency:
   cancel-in-progress: true
 env:
   # name ref pairs; m0b is a second build of m0 (measurement noise)
-  REFS: base 64c49ac m0 33f0c8c m0b 33f0c8c f1 a46e6ea f3 f4300bd
-  NAMES: base,m0,m0b,f1,f3
-  PAIRS: m0:m0b,base:m0,m0:f1,f1:f3,m0:f3
+  REFS: base 64c49ac c1 2bfa239 m0 33f0c8c m0b 33f0c8c
+  NAMES: base,c1,m0,m0b
+  PAIRS: m0:m0b,base:c1,c1:m0,base:m0
 jobs:
   prep:
     runs-on: ubuntu-24.04
@@ -33,13 +33,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, x86]
-        set: [real, syn]
-        shard: [1, 2]
-        runner: [windows-2025]
-        include:
-        - {arch: arm64, set: real, shard: 1, runner: windows-11-arm}
-        - {arch: arm64, set: syn, shard: 1, runner: windows-11-arm}
+        arch: [arm64]
+        set: [real]
+        shard: [1, 2, 3]
+        runner: [windows-11-arm]
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
@@ -67,12 +64,12 @@ jobs:
         cat res/cpu.txt; echo
         if [ "$SET" = real ]; then
           FILES="$IN/real/*"
-          CFGS=12:0,10:0,12:4096,12:16384,12:1024
+          CFGS=12:0,10:0
         else
           FILES="$IN/syn/* $IN/adv/avoid241 $IN/adv/s5mix $IN/adv/rev140 $IN/adv/thr1k $IN/adv/thr4k $IN/adv/thr64k"
           CFGS=12:0,10:0,12:4096,12:16384,10:16384
         fi
-        python scripts/r8_time/msab.py "$BIN" 8 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
+        python scripts/r8_time/msab.py "$BIN" 16 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
     - uses: actions/upload-artifact@v7
       if: always()
       with:
