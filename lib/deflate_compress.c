@@ -894,7 +894,7 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 	/* The zero-th counter counted the symbols with zero frequency. */
 	num_used_syms = num_syms - counters[0];
 
-	if (0) {
+	if (few_syms_used(num_used_syms, num_syms)) {
 		/* The symbols counted in the last counter will come last. */
 		unsigned last_count = counters[num_counters - 1];
 		u32 *used = &symout[num_syms - num_used_syms];
