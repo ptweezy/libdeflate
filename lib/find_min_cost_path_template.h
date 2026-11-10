@@ -187,6 +187,8 @@ FUNCNAME(struct libdeflate_compressor *c, const u32 block_length,
 		if (num_matches) {
 			const struct lz_match *match = cache_ptr - num_matches;
 			size_t len = DEFLATE_MIN_MATCH_LEN;
+			u32 best_packed = 1;
+			u32 best_offset = literal;
 
 			do {
 				size_t match_len = match->length;
@@ -194,7 +196,6 @@ FUNCNAME(struct libdeflate_compressor *c, const u32 block_length,
 				u8 offset_slot;
 				u32 packed_best;
 				u32 match_cost; /* relative to base_cost */
-				u32 match_item;
 				bool better;
 
 				/*
@@ -215,15 +216,16 @@ FUNCNAME(struct libdeflate_compressor *c, const u32 block_length,
 						len, match_len);
 				match_cost = c->p.n.costs.offset_slot[offset_slot] +
 					     (packed_best >> OPTIMUM_OFFSET_SHIFT);
-				match_item = (packed_best & OPTIMUM_LEN_MASK) |
-					     (offset << OPTIMUM_OFFSET_SHIFT);
 				better = match_cost < best_cost_to_end;
-				best_item ^= (best_item ^ match_item) & -(u32)better;
 				best_cost_to_end = better ? match_cost :
 							    best_cost_to_end;
+				best_packed = better ? packed_best : best_packed;
+				best_offset = better ? offset : best_offset;
 				len = match_len + 1;
 			} while (++match != cache_ptr);
 			cache_ptr -= num_matches;
+			best_item = (best_packed & OPTIMUM_LEN_MASK) |
+				    (best_offset << OPTIMUM_OFFSET_SHIFT);
 		}
 		/*
 		 * Store the absolute cost shifted left by OPTIMUM_OFFSET_SHIFT.
