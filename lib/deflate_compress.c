@@ -1732,23 +1732,17 @@ deflate_compute_precode_items(const u8 lens[], const unsigned num_lens,
 			 * since the many short runs make the loops below hard
 			 * to predict.
 			 *
-			 * The word is assembled from bytes, so this would work
-			 * anywhere.  But it has been measured only where
-			 * unaligned memory accesses are fast, so the existing
-			 * loop is kept elsewhere.
+			 * This has been measured only where unaligned memory
+			 * accesses are fast, so the existing loop is kept
+			 * elsewhere.
 			 */
 			run_end = run_start + 1;
 			if (num_lens - run_start >= 4) {
 				/*
 				 * Byte i of v is 0 iff lens[run_start + i] ==
-				 * len.  The bytes are combined explicitly,
-				 * since MSVC doesn't inline the memcpy() in
-				 * get_unaligned_le32() when optimizing for
-				 * size.
+				 * len.
 				 */
-				const u8 *p = &lens[run_start];
-				u32 v = (((u32)p[3] << 24) | ((u32)p[2] << 16) |
-					 ((u32)p[1] << 8) | p[0]) ^
+				u32 v = get_unaligned_le32(&lens[run_start]) ^
 					(len * 0x01010101U);
 
 				/* For zeroes, the 4th length doesn't matter. */
