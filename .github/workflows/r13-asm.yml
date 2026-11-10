@@ -1,0 +1,30 @@
+name: r13-asm
+# Test-only: MSVC arm64 assembly listings of lib/deflate_compress.c at fixed
+# commits.  Not for upstream.
+on:
+  push:
+    branches: ['r13-asm*']
+permissions:
+  contents: read
+concurrency:
+  group: r13-asm-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  REFS: 64c49ac 2bfa239 33f0c8c
+jobs:
+  asm:
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 16
+    - name: Listings
+      shell: cmd
+      run: call scripts\r8_time\msasm.bat arm64 "%RUNNER_TEMP%\asm" %REFS%
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-asm
+        path: ${{ runner.temp }}/asm/out
+        if-no-files-found: warn
