@@ -1,0 +1,26 @@
+# r15: matchfinder window continues across calls.
+# m0 = b681754, f1 = minimum cutoff with the matchfinder always initialized
+# (cost of the search change alone), f2 = the window continues.
+seedbase 15001
+series 2
+timeout 90
+group s1  ubuntu-24.04     g2 2 8 real 1:256:3:2 1:1024:3:2 1:4096:3:2 3:1024:3:2 3:4096:3:2
+group s6  ubuntu-24.04     g2 2 8 real 6:256:3:2 6:1024:3:2 6:4096:3:2 9:1024:3:2 9:4096:3:2
+group md  ubuntu-24.04     g2 2 8 real 1:16384:3:2 3:16384:3:2 6:16384:3:2 9:16384:3:2
+group wh  ubuntu-24.04     g2 2 8 real 1:0:3:2 3:0:3:2 6:0:3:2 9:0:3:1
+group no  ubuntu-24.04     g2 2 8 real 12:1024:3:1 12:4096:3:1 10:1024:3:1 12:16384:3:1 12:0:3:1
+group s1  ubuntu-24.04     c2 2 8 real 1:256:3:2 1:1024:3:2 1:4096:3:2 3:1024:3:2 3:4096:3:2
+group s6  ubuntu-24.04     c2 2 8 real 6:256:3:2 6:1024:3:2 6:4096:3:2 9:1024:3:2 9:4096:3:2
+group md  ubuntu-24.04     c2 2 8 real 1:16384:3:2 3:16384:3:2 6:16384:3:2 9:16384:3:2
+group wh  ubuntu-24.04     c2 2 8 real 1:0:3:2 3:0:3:2 6:0:3:2 9:0:3:1
+group no  ubuntu-24.04     c2 2 8 real 12:1024:3:1 12:4096:3:1 10:1024:3:1 12:16384:3:1 12:0:3:1
+group s1  ubuntu-24.04-arm g2 1 8 real 1:256:3:2 1:1024:3:2 1:4096:3:2 3:1024:3:2 3:4096:3:2
+group s6  ubuntu-24.04-arm g2 1 8 real 6:256:3:2 6:1024:3:2 6:4096:3:2 9:1024:3:2 9:4096:3:2
+group md  ubuntu-24.04-arm g2 1 8 real 1:16384:3:2 3:16384:3:2 6:16384:3:2 9:16384:3:2
+group wh  ubuntu-24.04-arm g2 1 8 real 1:0:3:2 3:0:3:2 6:0:3:2 9:0:3:1
+group no  ubuntu-24.04-arm g2 1 8 real 12:1024:3:1 12:4096:3:1 10:1024:3:1 12:16384:3:1 12:0:3:1
+group s1  ubuntu-24.04-arm c2 1 8 real 1:256:3:2 1:1024:3:2 1:4096:3:2 3:1024:3:2 3:4096:3:2
+group s6  ubuntu-24.04-arm c2 1 8 real 6:256:3:2 6:1024:3:2 6:4096:3:2 9:1024:3:2 9:4096:3:2
+group md  ubuntu-24.04-arm c2 1 8 real 1:16384:3:2 3:16384:3:2 6:16384:3:2 9:16384:3:2
+group wh  ubuntu-24.04-arm c2 1 8 real 1:0:3:2 3:0:3:2 6:0:3:2 9:0:3:1
+group no  ubuntu-24.04-arm c2 1 8 real 12:1024:3:1 12:4096:3:1 10:1024:3:1 12:16384:3:1 12:0:3:1
