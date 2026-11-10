@@ -1,0 +1,9 @@
+# r8_time smoke test (see plan.py for the format): 4 small shards, about
+# 4 minutes.  Use it first on a new series, runner image or compiler.
+seedbase 1
+timeout 60
+group smoke ubuntu-24.04     g2 1 4 real 1:0:2:3:pos64+plc1 6:0:2:2:pos16+plc1 12:0:1:1:plc2 1:1024:1:2
+group smoka ubuntu-24.04     c2 1 4 adv  1:1024:1:2 6:4096:1:2 12:1024:1:1
+group smoke ubuntu-24.04-arm g2 1 4 real 1:0:2:3:pos48+plc1 6:0:2:2:pos12+plc1 12:0:1:1:plc2 1:1024:1:2
+ltopts --order rot
+group smoka ubuntu-24.04-arm c2 1 4 adv  1:1024:2:2 6:4096:2:2 12:1024:1:1
