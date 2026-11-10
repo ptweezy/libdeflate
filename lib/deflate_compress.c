@@ -2208,12 +2208,13 @@ deflate_flush_block(struct libdeflate_compressor *c,
 				ADD_BITS(codes->codewords.litlen[offset],
 					 codes->lens.litlen[offset]);
 				FLUSH_BITS();
+				i++;
 			} else {
 				/* Match */
 				WRITE_MATCH(c, codes, length, offset,
 					    c->p.n.offset_slot_full[offset]);
+				i += length;
 			}
-			i += length;
 		} while (i != block_length);
 	} else
 #endif /* SUPPORT_NEAR_OPTIMAL_PARSING */
