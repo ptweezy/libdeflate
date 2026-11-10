@@ -47,7 +47,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        fetch-depth: 12
+        fetch-depth: 24
     - uses: actions/download-artifact@v8
       with:
         name: r13-inputs
