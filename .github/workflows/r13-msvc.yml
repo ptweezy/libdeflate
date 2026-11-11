@@ -10,15 +10,13 @@ concurrency:
   group: r13-msvc-${{ github.ref }}
   cancel-in-progress: true
 env:
-  # name ref pad triples (layout experiment on PR 478's new head).  nb* is
-  # b681754, nc1* is a72116f (item walk in the tally loop), nc2* is f1ad6d3.
-  # pad = P1 + 100 * P2: P1 bytes of unused code after
-  # deflate_find_min_cost_path, P2 bytes after deflate_find_min_cost_path_simd.
-  # nc1 already has every later function 16 bytes above nb.
-  REFS: nb b681754 0 nb16 b681754 16 nb32 b681754 32 nb48 b681754 48 nc1 a72116f 0 nc1p16 a72116f 16 nc1p32 a72116f 32 nc1p48 a72116f 48 nc2p48 f1ad6d3 48 nbB b681754 1600 nbC b681754 4816
-  NAMES: nb,nb16,nb32,nb48,nc1,nc1p16,nc1p32,nc1p48,nc2p48,nbB,nbC
-  EXPECT: nb:0,nb16:16,nb32:32,nb48:48,nc1:16,nc1p16:32,nc1p32:48,nc1p48:64,nc2p48:64,nbB:0:16,nbC:16:64
-  PAIRS: nb:nc1,nb:nb16,nb:nb32,nb:nb48,nb16:nc1,nb32:nc1p16,nb48:nc1p32,nb:nc1p48,nb:nc2p48,nc1p48:nc2p48,nb:nbB,nb:nbC
+  # name ref pairs.  The library is built with CMake (Release), as a user
+  # builds it, and msbench is linked against the static library.  nb is
+  # b681754, nc1 is a72116f, nc2 and nc2b are f1ad6d3 (A/A control).
+  REFS: nb b681754 nc1 a72116f nc2 f1ad6d3 nc2b f1ad6d3
+  NAMES: nb,nc1,nc2,nc2b
+  EXPECT: nb:x,nc1:x,nc2:x,nc2b:x
+  PAIRS: nc2:nc2b,nb:nc1,nc1:nc2,nb:nc2
 jobs:
   prep:
     runs-on: ubuntu-24.04
@@ -40,7 +38,7 @@ jobs:
       matrix:
         arch: [arm64]
         set: [real]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
         runner: [windows-11-arm]
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
     runs-on: ${{ matrix.runner }}
@@ -55,7 +53,7 @@ jobs:
         path: ${{ runner.temp }}/r8in
     - name: Build
       shell: cmd
-      run: call scripts\r8_time\msbuild.bat ${{ matrix.arch }} "%RUNNER_TEMP%\msb" %REFS%
+      run: call scripts\r8_time\msbuildcm.bat ${{ matrix.arch }} "%RUNNER_TEMP%\msb" %REFS%
     - name: Time
       shell: bash
       env:
@@ -69,7 +67,7 @@ jobs:
         cat res/cpu.txt; echo
         python scripts/r8_time/mslayout.py "$BIN" "$EXPECT" | tee res/layout.txt
         test "${PIPESTATUS[0]}" = 0
-        cp "$BIN"/*.map res/
+        cp "$BIN"/*.map "$BIN"/*.buildlog res/
         if [ "${{ matrix.shard }}" = 1 ]; then cp "$BIN"/*.dis res/; fi
         if [ "$SET" = real ]; then
           FILES="$IN/real/*"
@@ -78,7 +76,7 @@ jobs:
           FILES="$IN/syn/* $IN/adv/avoid241 $IN/adv/s5mix $IN/adv/rev140 $IN/adv/thr1k $IN/adv/thr4k $IN/adv/thr64k"
           CFGS=12:0,10:0,12:4096,12:16384,10:16384
         fi
-        python scripts/r8_time/msab.py "$BIN" 12 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
+        python scripts/r8_time/msab.py "$BIN" 16 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
     - uses: actions/upload-artifact@v7
       if: always()
       with:
