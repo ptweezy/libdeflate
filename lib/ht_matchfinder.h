@@ -73,10 +73,30 @@ ht_matchfinder_slide_window(struct ht_matchfinder *mf)
 	matchfinder_rebase((mf_pos_t *)mf, sizeof(*mf));
 }
 
+#endif /* LIB_HT_MATCHFINDER_H */
+
+/*
+ * The functions below are compiled once per inclusion of this file.  If
+ * MATCHFINDER_CONTINUED is defined, they are the variants that continue a
+ * window (see struct matchfinder_continuation), and the includer must have
+ * defined macros that give them different names.
+ */
+#undef MATCHFINDER_NODE_PTR
+#ifdef MATCHFINDER_CONTINUED
+#  define MATCHFINDER_NODE_PTR(node)	\
+	(in_next - ((ptrdiff_t)cur_pos - (node)))
+#else
+#  define MATCHFINDER_NODE_PTR(node)	(&in_base[node])
+#endif
+
 /* Note: max_len must be >= HT_MATCHFINDER_REQUIRED_NBYTES */
 static forceinline u32
 ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
+#ifdef MATCHFINDER_CONTINUED
+			     const struct matchfinder_continuation * const cont,
+#else
 			     const u8 ** const in_base_p,
+#endif
 			     const u8 * const in_next,
 			     const u32 max_len,
 			     const u32 nice_len,
@@ -85,9 +105,14 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 {
 	u32 best_len = 0;
 	const u8 *best_matchptr = in_next;
+#ifdef MATCHFINDER_CONTINUED
+	const u32 cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
+	const mf_pos_t cutoff = cont->begin_pos - 1;
+#else
 	u32 cur_pos = in_next - *in_base_p;
 	const u8 *in_base;
 	mf_pos_t cutoff;
+#endif
 	u32 hash;
 	u32 seq;
 	mf_pos_t cur_node;
@@ -103,6 +128,7 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	/* This is assumed throughout this function. */
 	STATIC_ASSERT(HT_MATCHFINDER_MIN_MATCH_LEN == 4);
 
+#ifndef MATCHFINDER_CONTINUED
 	if (cur_pos == MATCHFINDER_WINDOW_SIZE) {
 		ht_matchfinder_slide_window(mf);
 		*in_base_p += MATCHFINDER_WINDOW_SIZE;
@@ -110,6 +136,7 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	}
 	in_base = *in_base_p;
 	cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
+#endif
 
 	hash = *next_hash;
 	STATIC_ASSERT(HT_MATCHFINDER_REQUIRED_NBYTES == 5);
@@ -123,7 +150,7 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	mf->hash_tab[hash][0] = cur_pos;
 	if (cur_node <= cutoff)
 		goto out;
-	matchptr = &in_base[cur_node];
+	matchptr = MATCHFINDER_NODE_PTR(cur_node);
 	if (load_u32_unaligned(matchptr) == seq) {
 		best_len = lz_extend(in_next, matchptr, 4, max_len);
 		best_matchptr = matchptr;
@@ -138,7 +165,7 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	mf->hash_tab[hash][0] = cur_pos;
 	if (cur_node <= cutoff)
 		goto out;
-	matchptr = &in_base[cur_node];
+	matchptr = MATCHFINDER_NODE_PTR(cur_node);
 
 	to_insert = cur_node;
 	cur_node = mf->hash_tab[hash][1];
@@ -149,7 +176,7 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 		best_matchptr = matchptr;
 		if (cur_node <= cutoff || best_len >= nice_len)
 			goto out;
-		matchptr = &in_base[cur_node];
+		matchptr = MATCHFINDER_NODE_PTR(cur_node);
 		if (load_u32_unaligned(matchptr) == seq &&
 		    load_u32_unaligned(matchptr + best_len - 3) ==
 		    load_u32_unaligned(in_next + best_len - 3)) {
@@ -162,7 +189,7 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	} else {
 		if (cur_node <= cutoff)
 			goto out;
-		matchptr = &in_base[cur_node];
+		matchptr = MATCHFINDER_NODE_PTR(cur_node);
 		if (load_u32_unaligned(matchptr) == seq) {
 			best_len = lz_extend(in_next, matchptr, 4, max_len);
 			best_matchptr = matchptr;
@@ -176,7 +203,7 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 		mf->hash_tab[hash][i] = to_insert;
 		if (cur_node <= cutoff)
 			goto out;
-		matchptr = &in_base[cur_node];
+		matchptr = MATCHFINDER_NODE_PTR(cur_node);
 		if (load_u32_unaligned(matchptr) == seq) {
 			len = lz_extend(in_next, matchptr, 4, max_len);
 			if (len > best_len) {
@@ -196,13 +223,21 @@ out:
 
 static forceinline void
 ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
+#ifdef MATCHFINDER_CONTINUED
+			  const struct matchfinder_continuation * const cont,
+#else
 			  const u8 ** const in_base_p,
+#endif
 			  const u8 *in_next,
 			  const u8 * const in_end,
 			  const u32 count,
 			  u32 * const next_hash)
 {
+#ifdef MATCHFINDER_CONTINUED
+	s32 cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
+#else
 	s32 cur_pos = in_next - *in_base_p;
+#endif
 	u32 hash;
 	u32 remaining = count;
 	int i;
@@ -210,11 +245,13 @@ ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
 	if (unlikely(count + HT_MATCHFINDER_REQUIRED_NBYTES > in_end - in_next))
 		return;
 
+#ifndef MATCHFINDER_CONTINUED
 	if (cur_pos + count - 1 >= MATCHFINDER_WINDOW_SIZE) {
 		ht_matchfinder_slide_window(mf);
 		*in_base_p += MATCHFINDER_WINDOW_SIZE;
 		cur_pos -= MATCHFINDER_WINDOW_SIZE;
 	}
+#endif
 
 	hash = *next_hash;
 	do {
@@ -231,4 +268,4 @@ ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
 	*next_hash = hash;
 }
 
-#endif /* LIB_HT_MATCHFINDER_H */
+#undef MATCHFINDER_NODE_PTR
