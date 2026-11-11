@@ -30,8 +30,20 @@
 
 #include "cpu_features.h"
 
-#ifdef __AVX2__
-static forceinline void
+/*
+ * matchfinder_init_avx2() is inlined when the library is compiled with AVX2
+ * enabled.  Otherwise it is a separate function that matchfinder_init_x86()
+ * calls if the CPU supports AVX2.
+ */
+#if defined(__AVX2__) || \
+	(HAVE_SSE2_NATIVE && \
+	 (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)))
+#  ifdef __AVX2__
+#    define MATCHFINDER_INIT_AVX2_ATTRIBUTES	forceinline
+#  else
+#    define MATCHFINDER_INIT_AVX2_ATTRIBUTES	_target_attribute("avx2")
+#  endif
+static MATCHFINDER_INIT_AVX2_ATTRIBUTES void
 matchfinder_init_avx2(mf_pos_t *data, size_t size)
 {
 	__m256i *p = (__m256i *)data;
@@ -50,6 +62,12 @@ matchfinder_init_avx2(mf_pos_t *data, size_t size)
 		size -= 4 * sizeof(*p);
 	} while (size != 0);
 }
+#  define HAVE_MATCHFINDER_INIT_AVX2	1
+#else
+#  define HAVE_MATCHFINDER_INIT_AVX2	0
+#endif
+
+#ifdef __AVX2__
 #define matchfinder_init matchfinder_init_avx2
 
 static forceinline void
@@ -94,7 +112,26 @@ matchfinder_init_sse2(mf_pos_t *data, size_t size)
 		size -= 4 * sizeof(*p);
 	} while (size != 0);
 }
+
+#if HAVE_MATCHFINDER_INIT_AVX2
+/*
+ * If the CPU supports AVX2, use it to initialize the hash tables.  The AVX2
+ * implementation stores 32 bytes at a time instead of 16, which about halves
+ * the time taken.  For a small input, initializing the hash tables is a large
+ * part of the total time.
+ */
+static forceinline void
+matchfinder_init_x86(mf_pos_t *data, size_t size)
+{
+	if (HAVE_AVX2(get_x86_cpu_features()))
+		matchfinder_init_avx2(data, size);
+	else
+		matchfinder_init_sse2(data, size);
+}
+#define matchfinder_init matchfinder_init_x86
+#else
 #define matchfinder_init matchfinder_init_sse2
+#endif
 
 static forceinline void
 matchfinder_rebase_sse2(mf_pos_t *data, size_t size)
