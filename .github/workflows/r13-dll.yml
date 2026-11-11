@@ -1,0 +1,44 @@
+name: r13-dll
+# Test-only: where the near-optimal parser's functions land in the CMake
+# Release deflate.dll built with MSVC for arm64, at fixed commits.  Not for
+# upstream.
+on:
+  push:
+    branches: ['r13-dll*']
+permissions:
+  contents: read
+concurrency:
+  group: r13-dll-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  REFS: a8cac98 b681754 a72116f f1ad6d3
+  EXPECT: a8cac98:x,b681754:x,a72116f:x,f1ad6d3:x
+jobs:
+  dll:
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 24
+    - name: Build
+      shell: pwsh
+      run: |
+        $out = "$env:RUNNER_TEMP/dll".Replace('\', '/')
+        New-Item -ItemType Directory -Force "$out/out" | Out-Null
+        foreach ($r in $env:REFS.Split(' ')) {
+          git worktree add --detach "$out/src-$r" $r
+          if ($LASTEXITCODE) { exit 1 }
+          cmake -S "$out/src-$r" -B "$out/b-$r" -A ARM64 -DLIBDEFLATE_BUILD_GZIP=OFF -DLIBDEFLATE_BUILD_STATIC_LIB=OFF "-DCMAKE_SHARED_LINKER_FLAGS=/MAP:$out/out/$r.map"
+          if ($LASTEXITCODE) { exit 1 }
+          cmake --build "$out/b-$r" --config Release
+          if ($LASTEXITCODE) { exit 1 }
+        }
+        python scripts/r8_time/mslayout.py "$out/out" $env:EXPECT | Tee-Object "$out/out/layout.txt"
+        if ($LASTEXITCODE) { exit 1 }
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-dll
+        path: ${{ runner.temp }}/dll/out
+        if-no-files-found: warn
