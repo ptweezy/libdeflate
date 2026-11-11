@@ -2727,7 +2727,8 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hash = 0;
 
-	if (1) {
+	if (in_nbytes > MATCHFINDER_WINDOW_SIZE ||
+	    c->mf_next_pos > MATCHFINDER_WINDOW_SIZE - in_nbytes) {
 		ht_matchfinder_init(&c->p.f.ht_mf);
 		c->mf_next_pos = 0;
 		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
@@ -2825,7 +2826,8 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
 
-	if (1) {
+	if (in_nbytes > MATCHFINDER_WINDOW_SIZE ||
+	    c->mf_next_pos > MATCHFINDER_WINDOW_SIZE - in_nbytes) {
 		hc_matchfinder_init(&c->p.g.hc_mf, GREEDY_MULTI_HOP);
 		c->mf_next_pos = 0;
 		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
@@ -2914,7 +2916,8 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
 
-	if (1) {
+	if (in_nbytes > MATCHFINDER_WINDOW_SIZE ||
+	    c->mf_next_pos > MATCHFINDER_WINDOW_SIZE - in_nbytes) {
 		hc_matchfinder_init(&c->p.g.hc_mf, LAZY_MULTI_HOP);
 		c->mf_next_pos = 0;
 		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
@@ -3993,7 +3996,8 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 	u32 next_hashes[2] = {0, 0};
 	bool prev_block_used_only_literals = false;
 
-	if (1) {
+	if (in_nbytes > MATCHFINDER_WINDOW_SIZE ||
+	    c->mf_next_pos > MATCHFINDER_WINDOW_SIZE - in_nbytes) {
 		bt_matchfinder_init(&c->p.n.bt_mf);
 		c->mf_next_pos = 0;
 		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
