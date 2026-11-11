@@ -3525,6 +3525,18 @@ deflate_optimize_and_flush_block(struct libdeflate_compressor *c,
 #if SUPPORT_NEAR_OPTIMAL_PARSING
 #  include "bt_matchfinder.h"
 #endif
+#undef ht_matchfinder_longest_match
+#undef ht_matchfinder_skip_bytes
+#undef hc_matchfinder_longest_match
+#undef hc_matchfinder_skip_bytes
+#define ht_matchfinder_longest_match(mf, base_p, ...) \
+	ht_matchfinder_longest_match_continued(mf, in, mf_begin_pos, __VA_ARGS__)
+#define ht_matchfinder_skip_bytes(mf, base_p, ...) \
+	ht_matchfinder_skip_bytes_continued(mf, in, mf_begin_pos, __VA_ARGS__)
+#define hc_matchfinder_longest_match(mf, base_p, ...) \
+	hc_matchfinder_longest_match_continued(mf, in, mf_begin_pos, __VA_ARGS__)
+#define hc_matchfinder_skip_bytes(mf, base_p, ...) \
+	hc_matchfinder_skip_bytes_continued(mf, in, mf_begin_pos, __VA_ARGS__)
 #include "compress_template.h"
 #undef MATCHFINDER_CONTINUED
 #undef ht_matchfinder_longest_match

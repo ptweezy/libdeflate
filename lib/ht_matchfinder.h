@@ -93,7 +93,8 @@ ht_matchfinder_slide_window(struct ht_matchfinder *mf)
 static forceinline u32
 ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 #ifdef MATCHFINDER_CONTINUED
-			     const struct matchfinder_continuation * const cont,
+			     const u8 * const in_begin,
+			     const u32 begin_pos,
 #else
 			     const u8 ** const in_base_p,
 #endif
@@ -106,8 +107,8 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	u32 best_len = 0;
 	const u8 *best_matchptr = in_next;
 #ifdef MATCHFINDER_CONTINUED
-	const u32 cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
-	const mf_pos_t cutoff = cont->begin_pos - 1;
+	const u32 cur_pos = begin_pos + (u32)(in_next - in_begin);
+	const mf_pos_t cutoff = begin_pos - 1;
 #else
 	u32 cur_pos = in_next - *in_base_p;
 	const u8 *in_base;
@@ -224,7 +225,8 @@ out:
 static forceinline void
 ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
 #ifdef MATCHFINDER_CONTINUED
-			  const struct matchfinder_continuation * const cont,
+			  const u8 * const in_begin,
+			  const u32 begin_pos,
 #else
 			  const u8 ** const in_base_p,
 #endif
@@ -234,7 +236,7 @@ ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
 			  u32 * const next_hash)
 {
 #ifdef MATCHFINDER_CONTINUED
-	s32 cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
+	s32 cur_pos = begin_pos + (u32)(in_next - in_begin);
 #else
 	s32 cur_pos = in_next - *in_base_p;
 #endif

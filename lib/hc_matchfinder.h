@@ -316,7 +316,8 @@ hc_matchfinder_slide_window(struct hc_matchfinder *mf, bool multi_hop)
 static forceinline u32
 hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 #ifdef MATCHFINDER_CONTINUED
-			     const struct matchfinder_continuation * const cont,
+			     const u8 * const in_begin,
+			     const u32 begin_pos,
 #else
 			     const u8 ** const in_base_p,
 #endif
@@ -341,8 +342,8 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 	const u8 *matchptr;
 	u32 len;
 #ifdef MATCHFINDER_CONTINUED
-	const u32 cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
-	const mf_pos_t cutoff = cont->begin_pos - 1;
+	const u32 cur_pos = begin_pos + (u32)(in_next - in_begin);
+	const mf_pos_t cutoff = begin_pos - 1;
 #else
 	u32 cur_pos = in_next - *in_base_p;
 	const u8 *in_base;
@@ -551,7 +552,8 @@ out:
 static forceinline void
 hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 #ifdef MATCHFINDER_CONTINUED
-			  const struct matchfinder_continuation * const cont,
+			  const u8 * const in_begin,
+			  const u32 begin_pos,
 #else
 			  const u8 ** const in_base_p,
 #endif
@@ -570,7 +572,7 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 		return;
 
 #ifdef MATCHFINDER_CONTINUED
-	cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
+	cur_pos = begin_pos + (u32)(in_next - in_begin);
 #else
 	cur_pos = in_next - *in_base_p;
 #endif

@@ -87,9 +87,7 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
 #ifdef MATCHFINDER_CONTINUED
-	const struct matchfinder_continuation in_cur_base = {
-		in, c->mf_next_pos
-	};
+	const u32 mf_begin_pos = c->mf_next_pos;
 #else
 	const u8 *in_cur_base = in_next;
 #endif
@@ -172,9 +170,7 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
 #ifdef MATCHFINDER_CONTINUED
-	const struct matchfinder_continuation in_cur_base = {
-		in, c->mf_next_pos
-	};
+	const u32 mf_begin_pos = c->mf_next_pos;
 #else
 	const u8 *in_cur_base = in_next;
 #endif
@@ -258,9 +254,7 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
 #ifdef MATCHFINDER_CONTINUED
-	const struct matchfinder_continuation in_cur_base = {
-		in, c->mf_next_pos
-	};
+	const u32 mf_begin_pos = c->mf_next_pos;
 #else
 	const u8 *in_cur_base = in_next;
 #endif
