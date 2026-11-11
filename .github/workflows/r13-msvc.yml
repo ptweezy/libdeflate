@@ -36,10 +36,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, x86]
+        arch: [arm64]
         set: [syn]
         shard: [1, 2, 3, 4]
-        runner: [windows-2025]
+        runner: [windows-11-arm]
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
@@ -76,7 +76,7 @@ jobs:
           FILES="$IN/syn/* $IN/adv/avoid241 $IN/adv/s5mix $IN/adv/rev140 $IN/adv/thr1k $IN/adv/thr4k $IN/adv/thr64k"
           CFGS=12:0,10:0,12:4096,12:16384,10:16384
         fi
-        python scripts/r8_time/msab.py "$BIN" 12 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
+        python scripts/r8_time/msab.py "$BIN" 16 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
     - uses: actions/upload-artifact@v7
       if: always()
       with:
