@@ -135,12 +135,35 @@ bt_right_child(struct bt_matchfinder *mf, s32 node)
  * remaining to load a 32-bit integer from the *next* position.  */
 #define BT_MATCHFINDER_REQUIRED_NBYTES	5
 
+#endif /* LIB_BT_MATCHFINDER_H */
+
+/*
+ * The functions below are compiled once per inclusion of this file.  If
+ * MATCHFINDER_CONTINUED is defined, they are the variants that continue a
+ * window, and the includer must have defined macros that give them different
+ * names.  These variants take the start of the input buffer as @in_base, the
+ * position in the buffer as @in_pos, and the matchfinder position of the start
+ * of the buffer as @begin_pos; see struct matchfinder_continuation.
+ */
+#undef MATCHFINDER_NODE_PTR
+#ifdef MATCHFINDER_CONTINUED
+#  define MATCHFINDER_NODE_PTR(node)	\
+	(in_next - ((ptrdiff_t)cur_pos - (node)))
+#else
+#  define MATCHFINDER_NODE_PTR(node)	(&in_base[node])
+#endif
+
 /* Advance the binary tree matchfinder by one byte, optionally recording
  * matches.  @record_matches should be a compile-time constant.  */
 static forceinline struct lz_match *
 bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 				const u8 * const in_base,
+#ifdef MATCHFINDER_CONTINUED
+				const ptrdiff_t in_pos,
+				const u32 begin_pos,
+#else
 				const ptrdiff_t cur_pos,
+#endif
 				const u32 max_len,
 				const u32 nice_len,
 				const u32 max_search_depth,
@@ -148,9 +171,16 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 				struct lz_match *lz_matchptr,
 				const bool record_matches)
 {
+#ifdef MATCHFINDER_CONTINUED
+	const u8 *in_next = in_base + in_pos;
+	const ptrdiff_t cur_pos = (ptrdiff_t)begin_pos + in_pos;
+	u32 depth_remaining = max_search_depth;
+	const s32 cutoff = (s32)begin_pos - 1;
+#else
 	const u8 *in_next = in_base + cur_pos;
 	u32 depth_remaining = max_search_depth;
 	const s32 cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
+#endif
 	u32 next_hashseq;
 	u32 hash3;
 	u32 hash4;
@@ -185,17 +215,17 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 #endif
 	if (record_matches && cur_node > cutoff) {
 		u32 seq3 = load_u24_unaligned(in_next);
-		if (seq3 == load_u24_unaligned(&in_base[cur_node])) {
+		if (seq3 == load_u24_unaligned(MATCHFINDER_NODE_PTR(cur_node))) {
 			lz_matchptr->length = 3;
-			lz_matchptr->offset = in_next - &in_base[cur_node];
+			lz_matchptr->offset = in_next - MATCHFINDER_NODE_PTR(cur_node);
 			lz_matchptr++;
 		}
 	#if BT_MATCHFINDER_HASH3_WAYS >= 2
 		else if (cur_node_2 > cutoff &&
-			seq3 == load_u24_unaligned(&in_base[cur_node_2]))
+			seq3 == load_u24_unaligned(MATCHFINDER_NODE_PTR(cur_node_2)))
 		{
 			lz_matchptr->length = 3;
-			lz_matchptr->offset = in_next - &in_base[cur_node_2];
+			lz_matchptr->offset = in_next - MATCHFINDER_NODE_PTR(cur_node_2);
 			lz_matchptr++;
 		}
 	#endif
@@ -218,7 +248,7 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 	len = 0;
 
 	for (;;) {
-		matchptr = &in_base[cur_node];
+		matchptr = MATCHFINDER_NODE_PTR(cur_node);
 
 		if (matchptr[len] == in_next[len]) {
 			len = lz_extend(in_next, matchptr, len + 1, max_len);
@@ -297,6 +327,9 @@ static forceinline struct lz_match *
 bt_matchfinder_get_matches(struct bt_matchfinder *mf,
 			   const u8 *in_base,
 			   ptrdiff_t cur_pos,
+#ifdef MATCHFINDER_CONTINUED
+			   u32 begin_pos,
+#endif
 			   u32 max_len,
 			   u32 nice_len,
 			   u32 max_search_depth,
@@ -306,6 +339,9 @@ bt_matchfinder_get_matches(struct bt_matchfinder *mf,
 	return bt_matchfinder_advance_one_byte(mf,
 					       in_base,
 					       cur_pos,
+#ifdef MATCHFINDER_CONTINUED
+					       begin_pos,
+#endif
 					       max_len,
 					       nice_len,
 					       max_search_depth,
@@ -324,6 +360,9 @@ static forceinline void
 bt_matchfinder_skip_byte(struct bt_matchfinder *mf,
 			 const u8 *in_base,
 			 ptrdiff_t cur_pos,
+#ifdef MATCHFINDER_CONTINUED
+			 u32 begin_pos,
+#endif
 			 u32 nice_len,
 			 u32 max_search_depth,
 			 u32 next_hashes[2])
@@ -331,6 +370,9 @@ bt_matchfinder_skip_byte(struct bt_matchfinder *mf,
 	bt_matchfinder_advance_one_byte(mf,
 					in_base,
 					cur_pos,
+#ifdef MATCHFINDER_CONTINUED
+					begin_pos,
+#endif
 					nice_len,
 					nice_len,
 					max_search_depth,
@@ -339,4 +381,4 @@ bt_matchfinder_skip_byte(struct bt_matchfinder *mf,
 					false);
 }
 
-#endif /* LIB_BT_MATCHFINDER_H */
+#undef MATCHFINDER_NODE_PTR

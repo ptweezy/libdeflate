@@ -102,6 +102,15 @@
 #define FAST_SOFT_MAX_BLOCK_LENGTH	65535
 
 /*
+ * The maximum input length for which a call continues the matchfinder window
+ * of the previous call instead of reinitializing the matchfinder.  Skipping
+ * the initialization pays off only when its cost is significant relative to
+ * the rest of the call.  This must be less than MIN_BLOCK_LENGTH and less than
+ * 10000, as the continued variants of the parsers rely on it.
+ */
+#define MAX_CONTINUED_INPUT_LENGTH	4096
+
+/*
  * For deflate_compress_fastest(): this is the length of the sequence store.
  * This is like SEQ_STORE_LENGTH, but this should be a lower value.
  */
@@ -498,13 +507,21 @@ struct block_split_stats {
 };
 
 struct deflate_output_bitstream;
+struct libdeflate_compressor;
+
+typedef void (*deflate_impl_t)(struct libdeflate_compressor *restrict c,
+			       const u8 *in, size_t in_nbytes,
+			       struct deflate_output_bitstream *os);
 
 /* The main DEFLATE compressor structure */
 struct libdeflate_compressor {
 
-	/* Pointer to the compress() implementation chosen at allocation time */
-	void (*impl)(struct libdeflate_compressor *restrict c, const u8 *in,
-		     size_t in_nbytes, struct deflate_output_bitstream *os);
+	/*
+	 * The compress() implementations chosen at allocation time: impl[0]
+	 * initializes the matchfinder, and impl[1] continues the matchfinder
+	 * window of the previous call.
+	 */
+	const deflate_impl_t *impl;
 
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
@@ -562,6 +579,15 @@ struct libdeflate_compressor {
 			u8 lens[DEFLATE_MAX_MATCH_LEN + 1];
 		} length;
 	} o;
+
+	/*
+	 * The matchfinder position that follows the previous input buffer.  The
+	 * next buffer continues from it if it is at most
+	 * MAX_CONTINUED_INPUT_LENGTH bytes and fits in the rest of the window;
+	 * then the matchfinder needn't be reinitialized.  This is here because
+	 * it fits in the padding before 'p'.
+	 */
+	u32 mf_next_pos;
 
 	union {
 		/* Data for greedy or lazy parsing */
@@ -3474,58 +3500,83 @@ deflate_optimize_and_flush_block(struct libdeflate_compressor *c,
 			    is_final_block);
 }
 
-static void
-deflate_near_optimal_init_stats(struct libdeflate_compressor *c)
-{
-	init_block_split_stats(&c->split_stats);
-	memset(c->p.n.new_match_len_freqs, 0,
-	       sizeof(c->p.n.new_match_len_freqs));
-	memset(c->p.n.match_len_freqs, 0, sizeof(c->p.n.match_len_freqs));
-}
-
-static void
-deflate_near_optimal_merge_stats(struct libdeflate_compressor *c)
-{
-	unsigned i;
-
-	merge_new_observations(&c->split_stats);
-	for (i = 0; i < ARRAY_LEN(c->p.n.match_len_freqs); i++) {
-		c->p.n.match_len_freqs[i] += c->p.n.new_match_len_freqs[i];
-		c->p.n.new_match_len_freqs[i] = 0;
-	}
-}
-
-/*
- * Save some literal/match statistics from the previous block so that
- * deflate_adjust_costs() will be able to decide how much the current block
- * differs from the previous one.
- */
-static void
-deflate_near_optimal_save_stats(struct libdeflate_compressor *c)
-{
-	int i;
-
-	for (i = 0; i < NUM_OBSERVATION_TYPES; i++)
-		c->p.n.prev_observations[i] = c->split_stats.observations[i];
-	c->p.n.prev_num_observations = c->split_stats.num_observations;
-}
-
-static void
-deflate_near_optimal_clear_old_stats(struct libdeflate_compressor *c)
-{
-	int i;
-
-	for (i = 0; i < NUM_OBSERVATION_TYPES; i++)
-		c->split_stats.observations[i] = 0;
-	c->split_stats.num_observations = 0;
-	memset(c->p.n.match_len_freqs, 0, sizeof(c->p.n.match_len_freqs));
-}
-
 #endif /* SUPPORT_NEAR_OPTIMAL_PARSING */
 
 #include "compress_template.h"
 
+/*
+ * Compile the parsers and the matchfinder functions that they use again, as
+ * the variants that continue the matchfinder window of the previous call.
+ */
+#define MATCHFINDER_CONTINUED
+#define ht_matchfinder_longest_match	ht_matchfinder_longest_match_continued
+#define ht_matchfinder_skip_bytes	ht_matchfinder_skip_bytes_continued
+#define hc_matchfinder_longest_match	hc_matchfinder_longest_match_continued
+#define hc_matchfinder_skip_bytes	hc_matchfinder_skip_bytes_continued
+#define bt_matchfinder_advance_one_byte	bt_matchfinder_advance_one_byte_continued
+#define bt_matchfinder_get_matches	bt_matchfinder_get_matches_continued
+#define bt_matchfinder_skip_byte	bt_matchfinder_skip_byte_continued
+#define deflate_compress_fastest	deflate_compress_fastest_continued
+#define deflate_compress_greedy		deflate_compress_greedy_continued
+#define deflate_compress_lazy_generic	deflate_compress_lazy_generic_continued
+#define deflate_compress_lazy		deflate_compress_lazy_continued
+#define deflate_compress_lazy2		deflate_compress_lazy2_continued
+#define deflate_compress_near_optimal	deflate_compress_near_optimal_continued
+#define deflate_near_optimal_init_stats	deflate_near_optimal_init_stats_continued
+#define deflate_near_optimal_merge_stats	deflate_near_optimal_merge_stats_continued
+#define deflate_near_optimal_save_stats	deflate_near_optimal_save_stats_continued
+#define deflate_near_optimal_clear_old_stats	deflate_near_optimal_clear_old_stats_continued
+#include "hc_matchfinder.h"
+#include "ht_matchfinder.h"
 #if SUPPORT_NEAR_OPTIMAL_PARSING
+#  include "bt_matchfinder.h"
+#endif
+#include "compress_template.h"
+#undef MATCHFINDER_CONTINUED
+#undef ht_matchfinder_longest_match
+#undef ht_matchfinder_skip_bytes
+#undef hc_matchfinder_longest_match
+#undef hc_matchfinder_skip_bytes
+#undef bt_matchfinder_advance_one_byte
+#undef bt_matchfinder_get_matches
+#undef bt_matchfinder_skip_byte
+#undef deflate_compress_fastest
+#undef deflate_compress_greedy
+#undef deflate_compress_lazy_generic
+#undef deflate_compress_lazy
+#undef deflate_compress_lazy2
+#undef deflate_compress_near_optimal
+#undef deflate_near_optimal_init_stats
+#undef deflate_near_optimal_merge_stats
+#undef deflate_near_optimal_save_stats
+#undef deflate_near_optimal_clear_old_stats
+
+static const deflate_impl_t deflate_impl_fastest[2] = {
+	deflate_compress_fastest,
+	deflate_compress_fastest_continued,
+};
+
+static const deflate_impl_t deflate_impl_greedy[2] = {
+	deflate_compress_greedy,
+	deflate_compress_greedy_continued,
+};
+
+static const deflate_impl_t deflate_impl_lazy[2] = {
+	deflate_compress_lazy,
+	deflate_compress_lazy_continued,
+};
+
+static const deflate_impl_t deflate_impl_lazy2[2] = {
+	deflate_compress_lazy2,
+	deflate_compress_lazy2_continued,
+};
+
+#if SUPPORT_NEAR_OPTIMAL_PARSING
+
+static const deflate_impl_t deflate_impl_near_optimal[2] = {
+	deflate_compress_near_optimal,
+	deflate_compress_near_optimal_continued,
+};
 
 /* Initialize c->p.n.offset_slot_full. */
 static void
@@ -3550,7 +3601,7 @@ deflate_init_offset_slot_full(struct libdeflate_compressor *c)
 static void
 deflate_init_near_optimal_compressor(struct libdeflate_compressor *c)
 {
-	c->impl = deflate_compress_near_optimal;
+	c->impl = deflate_impl_near_optimal;
 	deflate_init_offset_slot_full(c);
 
 	/*
@@ -3616,6 +3667,7 @@ libdeflate_alloc_compressor_ex(int compression_level,
 		       options->free_func : libdeflate_default_free_func;
 
 	c->compression_level = compression_level;
+	c->mf_next_pos = MATCHFINDER_WINDOW_SIZE; /* initialize on first use */
 
 	/*
 	 * The higher the compression level, the more we should bother trying to
@@ -3629,42 +3681,42 @@ libdeflate_alloc_compressor_ex(int compression_level,
 		c->impl = NULL; /* not used */
 		break;
 	case 1:
-		c->impl = deflate_compress_fastest;
+		c->impl = deflate_impl_fastest;
 		/* max_search_depth is unused. */
 		c->nice_match_length = 32;
 		break;
 	case 2:
-		c->impl = deflate_compress_greedy;
+		c->impl = deflate_impl_greedy;
 		c->max_search_depth = 6;
 		c->nice_match_length = 10;
 		break;
 	case 3:
-		c->impl = deflate_compress_greedy;
+		c->impl = deflate_impl_greedy;
 		c->max_search_depth = 12;
 		c->nice_match_length = 14;
 		break;
 	case 4:
-		c->impl = deflate_compress_greedy;
+		c->impl = deflate_impl_greedy;
 		c->max_search_depth = 16;
 		c->nice_match_length = 30;
 		break;
 	case 5:
-		c->impl = deflate_compress_lazy;
+		c->impl = deflate_impl_lazy;
 		c->max_search_depth = 16;
 		c->nice_match_length = 30;
 		break;
 	case 6:
-		c->impl = deflate_compress_lazy;
+		c->impl = deflate_impl_lazy;
 		c->max_search_depth = 35;
 		c->nice_match_length = 65;
 		break;
 	case 7:
-		c->impl = deflate_compress_lazy;
+		c->impl = deflate_impl_lazy;
 		c->max_search_depth = 100;
 		c->nice_match_length = 130;
 		break;
 	case 8:
-		c->impl = deflate_compress_lazy2;
+		c->impl = deflate_impl_lazy2;
 		c->max_search_depth = 300;
 		c->nice_match_length = DEFLATE_MAX_MATCH_LEN;
 		break;
@@ -3672,7 +3724,7 @@ libdeflate_alloc_compressor_ex(int compression_level,
 #if !SUPPORT_NEAR_OPTIMAL_PARSING
 	default:
 #endif
-		c->impl = deflate_compress_lazy2;
+		c->impl = deflate_impl_lazy2;
 		c->max_search_depth = 600;
 		c->nice_match_length = DEFLATE_MAX_MATCH_LEN;
 		break;
@@ -3763,7 +3815,14 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.overflow = false;
 
 	/* Call the actual compression function. */
-	(*c->impl)(c, in, in_nbytes, &os);
+	if (in_nbytes <= MIN(MAX_CONTINUED_INPUT_LENGTH,
+			     MATCHFINDER_WINDOW_SIZE - c->mf_next_pos)) {
+		(*c->impl[1])(c, in, in_nbytes, &os);
+		c->mf_next_pos += (u32)in_nbytes;
+	} else {
+		(*c->impl[0])(c, in, in_nbytes, &os);
+		c->mf_next_pos = (u32)MIN(in_nbytes, MATCHFINDER_WINDOW_SIZE);
+	}
 
 	/* Return 0 if the output buffer is too small. */
 	if (os.overflow)

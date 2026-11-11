@@ -1,7 +1,11 @@
 /*
  * compress_template.h - the parsers of the DEFLATE compressor
  *
- * This file is included by deflate_compress.c.
+ * This file is included by deflate_compress.c, twice.  The second time,
+ * MATCHFINDER_CONTINUED is defined and macros rename the functions to
+ * *_continued().  Those variants don't initialize the matchfinder.  Instead,
+ * the matchfinder positions of the input buffer follow those of the buffer
+ * that was compressed before it; see libdeflate_deflate_compress().
  */
 
 /*
@@ -17,12 +21,20 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 {
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
+#ifdef MATCHFINDER_CONTINUED
+	const struct matchfinder_continuation in_cur_base = {
+		in, c->mf_next_pos
+	};
+#else
 	const u8 *in_cur_base = in_next;
+#endif
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hash = 0;
 
+#ifndef MATCHFINDER_CONTINUED
 	ht_matchfinder_init(&c->p.f.ht_mf);
+#endif
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -94,12 +106,20 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 {
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
+#ifdef MATCHFINDER_CONTINUED
+	const struct matchfinder_continuation in_cur_base = {
+		in, c->mf_next_pos
+	};
+#else
 	const u8 *in_cur_base = in_next;
+#endif
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
 
+#ifndef MATCHFINDER_CONTINUED
 	hc_matchfinder_init(&c->p.g.hc_mf, GREEDY_MULTI_HOP);
+#endif
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -172,12 +192,20 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 {
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
+#ifdef MATCHFINDER_CONTINUED
+	const struct matchfinder_continuation in_cur_base = {
+		in, c->mf_next_pos
+	};
+#else
 	const u8 *in_cur_base = in_next;
+#endif
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
 
+#ifndef MATCHFINDER_CONTINUED
 	hc_matchfinder_init(&c->p.g.hc_mf, LAZY_MULTI_HOP);
+#endif
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -185,8 +213,10 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 		const u8 * const in_block_begin = in_next;
 		const u8 * const in_max_block_end = choose_max_block_end(
 				in_next, in_end, SOFT_MAX_BLOCK_LENGTH);
+#ifndef MATCHFINDER_CONTINUED
 		const u8 *next_recalc_min_len =
 			in_next + MIN(in_end - in_next, 10000);
+#endif
 		struct deflate_sequence *seq = c->p.g.sequences;
 		u32 min_len;
 
@@ -201,9 +231,11 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 			u32 next_len;
 			u32 next_offset;
 
+#ifndef MATCHFINDER_CONTINUED
 			/*
 			 * Recalculate the minimum match length if it hasn't
-			 * been done recently.
+			 * been done recently.  (The inputs of the continued
+			 * variant are too short for this to happen.)
 			 */
 			if (in_next >= next_recalc_min_len) {
 				min_len = recalculate_min_match_len(
@@ -213,6 +245,7 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 					MIN(in_end - next_recalc_min_len,
 					    in_next - in_block_begin);
 			}
+#endif
 
 			/* Find the longest match at the current position. */
 			adjust_max_and_nice_len(&max_len, &nice_len,
@@ -405,6 +438,69 @@ deflate_compress_lazy2(struct libdeflate_compressor * restrict c,
 
 #if SUPPORT_NEAR_OPTIMAL_PARSING
 
+#ifdef MATCHFINDER_CONTINUED
+static forceinline void
+#else
+static void
+#endif
+deflate_near_optimal_init_stats(struct libdeflate_compressor *c)
+{
+	init_block_split_stats(&c->split_stats);
+	memset(c->p.n.new_match_len_freqs, 0,
+	       sizeof(c->p.n.new_match_len_freqs));
+	memset(c->p.n.match_len_freqs, 0, sizeof(c->p.n.match_len_freqs));
+}
+
+#ifdef MATCHFINDER_CONTINUED
+static forceinline void
+#else
+static void
+#endif
+deflate_near_optimal_merge_stats(struct libdeflate_compressor *c)
+{
+	unsigned i;
+
+	merge_new_observations(&c->split_stats);
+	for (i = 0; i < ARRAY_LEN(c->p.n.match_len_freqs); i++) {
+		c->p.n.match_len_freqs[i] += c->p.n.new_match_len_freqs[i];
+		c->p.n.new_match_len_freqs[i] = 0;
+	}
+}
+
+/*
+ * Save some literal/match statistics from the previous block so that
+ * deflate_adjust_costs() will be able to decide how much the current block
+ * differs from the previous one.
+ */
+#ifdef MATCHFINDER_CONTINUED
+static forceinline void
+#else
+static void
+#endif
+deflate_near_optimal_save_stats(struct libdeflate_compressor *c)
+{
+	int i;
+
+	for (i = 0; i < NUM_OBSERVATION_TYPES; i++)
+		c->p.n.prev_observations[i] = c->split_stats.observations[i];
+	c->p.n.prev_num_observations = c->split_stats.num_observations;
+}
+
+#ifdef MATCHFINDER_CONTINUED
+static forceinline void
+#else
+static void
+#endif
+deflate_near_optimal_clear_old_stats(struct libdeflate_compressor *c)
+{
+	int i;
+
+	for (i = 0; i < NUM_OBSERVATION_TYPES; i++)
+		c->split_stats.observations[i] = 0;
+	c->split_stats.num_observations = 0;
+	memset(c->p.n.match_len_freqs, 0, sizeof(c->p.n.match_len_freqs));
+}
+
 /*
  * This is the "near-optimal" DEFLATE compressor.  It computes the optimal
  * representation of each DEFLATE block using a minimum-cost path search over
@@ -435,7 +531,9 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 	u32 next_hashes[2] = {0, 0};
 	bool prev_block_used_only_literals = false;
 
+#ifndef MATCHFINDER_CONTINUED
 	bt_matchfinder_init(&c->p.n.bt_mf);
+#endif
 	deflate_near_optimal_init_stats(c);
 
 	do {
@@ -511,6 +609,9 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 						&c->p.n.bt_mf,
 						in_cur_base,
 						in_next - in_cur_base,
+#ifdef MATCHFINDER_CONTINUED
+						c->mf_next_pos,
+#endif
 						max_len,
 						nice_len,
 						c->max_search_depth,
@@ -571,6 +672,9 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 							&c->p.n.bt_mf,
 							in_cur_base,
 							in_next - in_cur_base,
+#ifdef MATCHFINDER_CONTINUED
+							c->mf_next_pos,
+#endif
 							nice_len,
 							c->max_search_depth,
 							next_hashes);

@@ -264,6 +264,22 @@ hc_matchfinder_slide_window(struct hc_matchfinder *mf, bool multi_hop)
 	matchfinder_rebase((mf_pos_t *)mf, hc_matchfinder_size(multi_hop));
 }
 
+#endif /* LIB_HC_MATCHFINDER_H */
+
+/*
+ * The functions below are compiled once per inclusion of this file.  If
+ * MATCHFINDER_CONTINUED is defined, they are the variants that continue a
+ * window (see struct matchfinder_continuation), and the includer must have
+ * defined macros that give them different names.
+ */
+#undef MATCHFINDER_NODE_PTR
+#ifdef MATCHFINDER_CONTINUED
+#  define MATCHFINDER_NODE_PTR(node)	\
+	(in_next - ((ptrdiff_t)cur_pos - (node)))
+#else
+#  define MATCHFINDER_NODE_PTR(node)	(&in_base[node])
+#endif
+
 /*
  * Find the longest match longer than 'best_len' bytes.
  *
@@ -299,7 +315,11 @@ hc_matchfinder_slide_window(struct hc_matchfinder *mf, bool multi_hop)
  */
 static forceinline u32
 hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
+#ifdef MATCHFINDER_CONTINUED
+			     const struct matchfinder_continuation * const cont,
+#else
 			     const u8 ** const in_base_p,
+#endif
 			     const u8 * const in_next,
 			     u32 best_len,
 			     const u32 max_len,
@@ -320,6 +340,10 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 	u32 seq4;
 	const u8 *matchptr;
 	u32 len;
+#ifdef MATCHFINDER_CONTINUED
+	const u32 cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
+	const mf_pos_t cutoff = cont->begin_pos - 1;
+#else
 	u32 cur_pos = in_next - *in_base_p;
 	const u8 *in_base;
 	mf_pos_t cutoff;
@@ -332,6 +356,7 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 
 	in_base = *in_base_p;
 	cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
+#endif
 
 	if (unlikely(max_len < 5)) /* can we read 4 bytes from 'in_next + 1'? */
 		goto out;
@@ -408,7 +433,7 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 		seq4 = load_u32_unaligned(in_next);
 
 		if (best_len < 3) {
-			matchptr = &in_base[cur_node3];
+			matchptr = MATCHFINDER_NODE_PTR(cur_node3);
 			if (load_u24_unaligned(matchptr) == loaded_u32_to_u24(seq4)) {
 				best_len = 3;
 				best_matchptr = matchptr;
@@ -423,7 +448,7 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 		HC_BEGIN_WALK();
 		for (;;) {
 			/* No length 4 match found yet.  Check the first 4 bytes.  */
-			matchptr = &in_base[cur_node4];
+			matchptr = MATCHFINDER_NODE_PTR(cur_node4);
 
 			if (load_u32_unaligned(matchptr) == seq4)
 				break;
@@ -452,7 +477,7 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 
 	for (;;) {
 		for (;;) {
-			matchptr = &in_base[cur_node4];
+			matchptr = MATCHFINDER_NODE_PTR(cur_node4);
 
 			/* Already found a length 4 match.  Try for a longer
 			 * match; start by checking either the last 4 bytes and
@@ -525,7 +550,11 @@ out:
  */
 static forceinline void
 hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
+#ifdef MATCHFINDER_CONTINUED
+			  const struct matchfinder_continuation * const cont,
+#else
 			  const u8 ** const in_base_p,
+#endif
 			  const u8 *in_next,
 			  const u8 * const in_end,
 			  const u32 count,
@@ -540,15 +569,21 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 	if (unlikely(count + 5 > in_end - in_next))
 		return;
 
+#ifdef MATCHFINDER_CONTINUED
+	cur_pos = cont->begin_pos + (u32)(in_next - cont->in_begin);
+#else
 	cur_pos = in_next - *in_base_p;
+#endif
 	hash3 = next_hashes[0];
 	hash4 = next_hashes[1];
 	do {
+#ifndef MATCHFINDER_CONTINUED
 		if (cur_pos == MATCHFINDER_WINDOW_SIZE) {
 			hc_matchfinder_slide_window(mf, multi_hop);
 			*in_base_p += MATCHFINDER_WINDOW_SIZE;
 			cur_pos = 0;
 		}
+#endif
 		mf->hash3_tab[hash3] = cur_pos;
 		hc_matchfinder_prepend(mf, cur_pos, mf->hash4_tab[hash4],
 				       multi_hop);
@@ -566,4 +601,4 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 	next_hashes[1] = hash4;
 }
 
-#endif /* LIB_HC_MATCHFINDER_H */
+#undef MATCHFINDER_NODE_PTR

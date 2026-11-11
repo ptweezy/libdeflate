@@ -51,6 +51,20 @@ typedef s16 mf_pos_t;
 #define MATCHFINDER_INITVAL ((mf_pos_t)-MATCHFINDER_WINDOW_SIZE)
 
 /*
+ * The place of an input buffer in a matchfinder window that an earlier buffer
+ * began: the byte in_begin[i] has position begin_pos + i.  The whole buffer
+ * must fit in the window, so that the window needn't be slid.  Nodes whose
+ * positions are less than begin_pos belong to earlier buffers and must be
+ * ignored.  The *_continued() variants of the matchfinder functions use this
+ * where the other variants use a pointer to the start of the window, which
+ * here would point before the buffer.
+ */
+struct matchfinder_continuation {
+	const u8 *in_begin;
+	u32 begin_pos;
+};
+
+/*
  * This is the memory address alignment, in bytes, required for the matchfinder
  * buffers by the architecture-specific implementations of matchfinder_init()
  * and matchfinder_rebase().  "Matchfinder buffer" means an entire struct
