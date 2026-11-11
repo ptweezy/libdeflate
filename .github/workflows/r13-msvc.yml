@@ -1,0 +1,104 @@
+name: r13-msvc
+# Test-only: interleaved MSVC timing of fixed commits on hosted Windows
+# runners (scripts/r8_time/msab.py).  Not for upstream.
+on:
+  push:
+    branches: ['r13-msvc*']
+permissions:
+  contents: read
+concurrency:
+  group: r13-msvc-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # name ref pad triples.  b = PR 478's head, t0 = the parsers moved to
+  # compress_template.h without changes, t5 = small inputs continue the
+  # matchfinder window.  One compressor is reused for all chunks and files.
+  REFS: b b681754 0 t5 c00e5c0 0 vc d846c9a 0
+  NAMES: b,t5,vc
+  EXPECT: b:x,t5:x,vc:x
+  PAIRS: b:t5,b:vc,t5:vc
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/r8_time/inputs.sh "$RUNNER_TEMP/r8in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: r13-inputs
+        path: ${{ runner.temp }}/r8in
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64]
+        set: [lo]
+        shard: [1, 2, 3]
+        runner: [windows-2025]
+    name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 24
+    - uses: actions/download-artifact@v8
+      with:
+        name: r13-inputs
+        path: ${{ runner.temp }}/r8in
+    - name: Build
+      shell: cmd
+      run: call scripts\r8_time\msbuild.bat ${{ matrix.arch }} "%RUNNER_TEMP%\msb" %REFS%
+    - name: Time
+      shell: bash
+      env:
+        MSB_CPU: 2
+        SET: ${{ matrix.set }}
+      run: |
+        IN=$(cygpath -m "$RUNNER_TEMP/r8in")
+        BIN=$(cygpath -m "$RUNNER_TEMP/msb")
+        mkdir -p res
+        powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors" | tr '\r\n' '  ' > res/cpu.txt
+        cat res/cpu.txt; echo
+        python scripts/r8_time/mslayout.py "$BIN" "$EXPECT" | tee res/layout.txt
+        test "${PIPESTATUS[0]}" = 0
+        cp "$BIN"/*.map res/
+        if [ "${{ matrix.shard }}" = 1 ]; then cp "$BIN"/*.dis res/; fi
+        FILES="$IN/real/*"
+        if [ "$SET" = lo ]; then
+          CFGS=6:4096,5:4096,7:4096,6:2048,6:1024,9:4096,9:2048,3:4096,6:8192
+        else
+          CFGS=12:256,12:1024,12:4096,10:4096,12:0
+        fi
+        python scripts/r8_time/msab.py "$BIN" 8 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-msvc-${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+        path: res
+        if-no-files-found: warn
+  aggregate:
+    needs: time
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: r13-msvc-*
+        path: res
+    - name: Aggregate
+      run: |
+        python3 scripts/r8_time/msagg.py res "$PAIRS" | tee summary.md
+        cat summary.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-msvc-summary
+        path: summary.md
