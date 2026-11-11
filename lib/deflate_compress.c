@@ -512,6 +512,13 @@ struct libdeflate_compressor {
 	/* The compression level with which this compressor was created */
 	unsigned compression_level;
 
+	/*
+	 * The matchfinder position that follows the last input buffer.  The
+	 * next buffer continues from it when it fits in the rest of the
+	 * current window; then the matchfinder needn't be reinitialized.
+	 */
+	u32 mf_next_pos;
+
 	/* Anything of this size or less we won't bother trying to compress. */
 	size_t max_passthrough_size;
 
@@ -2714,12 +2721,20 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 {
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
+	const u8 *in_cur_base;
+	s32 min_cutoff;
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hash = 0;
 
-	ht_matchfinder_init(&c->p.f.ht_mf);
+	if (1) {
+		ht_matchfinder_init(&c->p.f.ht_mf);
+		c->mf_next_pos = 0;
+		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
+	} else {
+		min_cutoff = (s32)c->mf_next_pos - 1;
+	}
+	in_cur_base = in - c->mf_next_pos;
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -2749,6 +2764,7 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 			}
 			length = ht_matchfinder_longest_match(&c->p.f.ht_mf,
 							      &in_cur_base,
+							      min_cutoff,
 							      in_next,
 							      max_len,
 							      nice_len,
@@ -2779,6 +2795,8 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 				     in_next - in_block_begin,
 				     c->p.f.sequences, in_next == in_end);
 	} while (in_next != in_end && !os->overflow);
+	c->mf_next_pos = (u32)MIN((size_t)(in_end - in_cur_base),
+				  MATCHFINDER_WINDOW_SIZE);
 }
 
 /*
@@ -2801,12 +2819,20 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 {
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
+	const u8 *in_cur_base;
+	s32 min_cutoff;
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
 
-	hc_matchfinder_init(&c->p.g.hc_mf, GREEDY_MULTI_HOP);
+	if (1) {
+		hc_matchfinder_init(&c->p.g.hc_mf, GREEDY_MULTI_HOP);
+		c->mf_next_pos = 0;
+		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
+	} else {
+		min_cutoff = (s32)c->mf_next_pos - 1;
+	}
+	in_cur_base = in - c->mf_next_pos;
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -2831,6 +2857,7 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 			length = hc_matchfinder_longest_match(
 						&c->p.g.hc_mf,
 						&in_cur_base,
+						min_cutoff,
 						in_next,
 						min_len - 1,
 						max_len,
@@ -2870,6 +2897,8 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 				     in_next - in_block_begin,
 				     c->p.g.sequences, in_next == in_end);
 	} while (in_next != in_end && !os->overflow);
+	c->mf_next_pos = (u32)MIN((size_t)(in_end - in_cur_base),
+				  MATCHFINDER_WINDOW_SIZE);
 }
 
 static forceinline void
@@ -2879,12 +2908,20 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 {
 	const u8 *in_next = in;
 	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
+	const u8 *in_cur_base;
+	s32 min_cutoff;
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
 
-	hc_matchfinder_init(&c->p.g.hc_mf, LAZY_MULTI_HOP);
+	if (1) {
+		hc_matchfinder_init(&c->p.g.hc_mf, LAZY_MULTI_HOP);
+		c->mf_next_pos = 0;
+		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
+	} else {
+		min_cutoff = (s32)c->mf_next_pos - 1;
+	}
+	in_cur_base = in - c->mf_next_pos;
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -2927,6 +2964,7 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 			cur_len = hc_matchfinder_longest_match(
 						&c->p.g.hc_mf,
 						&in_cur_base,
+						min_cutoff,
 						in_next,
 						min_len - 1,
 						max_len,
@@ -2985,6 +3023,7 @@ have_cur_match:
 			next_len = hc_matchfinder_longest_match(
 						&c->p.g.hc_mf,
 						&in_cur_base,
+						min_cutoff,
 						in_next++,
 						cur_len - 1,
 						max_len,
@@ -3016,6 +3055,7 @@ have_cur_match:
 				next_len = hc_matchfinder_longest_match(
 						&c->p.g.hc_mf,
 						&in_cur_base,
+						min_cutoff,
 						in_next++,
 						cur_len - 1,
 						max_len,
@@ -3082,6 +3122,8 @@ have_cur_match:
 				     in_next - in_block_begin,
 				     c->p.g.sequences, in_next == in_end);
 	} while (in_next != in_end && !os->overflow);
+	c->mf_next_pos = (u32)MIN((size_t)(in_end - in_cur_base),
+				  MATCHFINDER_WINDOW_SIZE);
 }
 
 /*
@@ -3941,7 +3983,8 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 	const u8 *in_next = in;
 	const u8 *in_block_begin = in_next;
 	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
+	const u8 *in_cur_base;
+	s32 min_cutoff;
 	const u8 *in_next_slide =
 		in_next + MIN(in_end - in_next, MATCHFINDER_WINDOW_SIZE);
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
@@ -3950,7 +3993,14 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 	u32 next_hashes[2] = {0, 0};
 	bool prev_block_used_only_literals = false;
 
-	bt_matchfinder_init(&c->p.n.bt_mf);
+	if (1) {
+		bt_matchfinder_init(&c->p.n.bt_mf);
+		c->mf_next_pos = 0;
+		min_cutoff = -(s32)MATCHFINDER_WINDOW_SIZE;
+	} else {
+		min_cutoff = (s32)c->mf_next_pos - 1;
+	}
+	in_cur_base = in - c->mf_next_pos;
 	deflate_near_optimal_init_stats(c);
 
 	do {
@@ -4026,6 +4076,7 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 						&c->p.n.bt_mf,
 						in_cur_base,
 						in_next - in_cur_base,
+						min_cutoff,
 						max_len,
 						nice_len,
 						c->max_search_depth,
@@ -4086,6 +4137,7 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 							&c->p.n.bt_mf,
 							in_cur_base,
 							in_next - in_cur_base,
+							min_cutoff,
 							nice_len,
 							c->max_search_depth,
 							next_hashes);
@@ -4190,6 +4242,8 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			in_block_begin = in_next;
 		}
 	} while (in_next != in_end && !os->overflow);
+	c->mf_next_pos = (u32)MIN((size_t)(in_end - in_cur_base),
+				  MATCHFINDER_WINDOW_SIZE);
 }
 
 /* Initialize c->p.n.offset_slot_full. */
@@ -4281,6 +4335,7 @@ libdeflate_alloc_compressor_ex(int compression_level,
 		       options->free_func : libdeflate_default_free_func;
 
 	c->compression_level = compression_level;
+	c->mf_next_pos = MATCHFINDER_WINDOW_SIZE; /* initialize on first use */
 
 	/*
 	 * The higher the compression level, the more we should bother trying to

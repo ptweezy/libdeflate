@@ -141,6 +141,7 @@ static forceinline struct lz_match *
 bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 				const u8 * const in_base,
 				const ptrdiff_t cur_pos,
+				const s32 min_cutoff,
 				const u32 max_len,
 				const u32 nice_len,
 				const u32 max_search_depth,
@@ -150,7 +151,8 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 {
 	const u8 *in_next = in_base + cur_pos;
 	u32 depth_remaining = max_search_depth;
-	const s32 cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
+	const s32 cutoff = MAX((s32)cur_pos -
+			       (s32)MATCHFINDER_WINDOW_SIZE, min_cutoff);
 	u32 next_hashseq;
 	u32 hash3;
 	u32 hash4;
@@ -297,6 +299,7 @@ static forceinline struct lz_match *
 bt_matchfinder_get_matches(struct bt_matchfinder *mf,
 			   const u8 *in_base,
 			   ptrdiff_t cur_pos,
+			   s32 min_cutoff,
 			   u32 max_len,
 			   u32 nice_len,
 			   u32 max_search_depth,
@@ -306,6 +309,7 @@ bt_matchfinder_get_matches(struct bt_matchfinder *mf,
 	return bt_matchfinder_advance_one_byte(mf,
 					       in_base,
 					       cur_pos,
+					       min_cutoff,
 					       max_len,
 					       nice_len,
 					       max_search_depth,
@@ -324,6 +328,7 @@ static forceinline void
 bt_matchfinder_skip_byte(struct bt_matchfinder *mf,
 			 const u8 *in_base,
 			 ptrdiff_t cur_pos,
+			 s32 min_cutoff,
 			 u32 nice_len,
 			 u32 max_search_depth,
 			 u32 next_hashes[2])
@@ -331,6 +336,7 @@ bt_matchfinder_skip_byte(struct bt_matchfinder *mf,
 	bt_matchfinder_advance_one_byte(mf,
 					in_base,
 					cur_pos,
+					min_cutoff,
 					nice_len,
 					nice_len,
 					max_search_depth,

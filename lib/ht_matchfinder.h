@@ -77,6 +77,7 @@ ht_matchfinder_slide_window(struct ht_matchfinder *mf)
 static forceinline u32
 ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 			     const u8 ** const in_base_p,
+			     const s32 min_cutoff,
 			     const u8 * const in_next,
 			     const u32 max_len,
 			     const u32 nice_len,
@@ -109,7 +110,8 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 		cur_pos = 0;
 	}
 	in_base = *in_base_p;
-	cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
+	cutoff = MAX((s32)cur_pos - (s32)MATCHFINDER_WINDOW_SIZE,
+		     min_cutoff);
 
 	hash = *next_hash;
 	STATIC_ASSERT(HT_MATCHFINDER_REQUIRED_NBYTES == 5);

@@ -300,6 +300,7 @@ hc_matchfinder_slide_window(struct hc_matchfinder *mf, bool multi_hop)
 static forceinline u32
 hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 			     const u8 ** const in_base_p,
+			     const s32 min_cutoff,
 			     const u8 * const in_next,
 			     u32 best_len,
 			     const u32 max_len,
@@ -331,7 +332,8 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 	}
 
 	in_base = *in_base_p;
-	cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
+	cutoff = MAX((s32)cur_pos - (s32)MATCHFINDER_WINDOW_SIZE,
+		     min_cutoff);
 
 	if (unlikely(max_len < 5)) /* can we read 4 bytes from 'in_next + 1'? */
 		goto out;
