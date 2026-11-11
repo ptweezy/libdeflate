@@ -1,8 +1,9 @@
 @echo off
-rem msbuildcm.bat ARCH OUTDIR NAME REF [NAME REF]...  (test-only)
+rem msbuildcm.bat ARCH OUTDIR NAME REF PAD [NAME REF PAD]...  (test-only)
 rem Builds the static library of each REF with CMake (Release configuration,
 rem the project's own flags), then links msbench.exe against it.  Also writes
-rem NAME.map and NAME.dis.
+rem NAME.map and NAME.dis.  r13pad.c is appended to lib/deflate_compress.c
+rem and R13_PAD=PAD is defined, as in msbuild.bat; PAD 0 adds no code.
 setlocal enabledelayedexpansion
 set ARCH=%1
 set OUT=%~2
@@ -19,12 +20,17 @@ shift
 if "%1"=="" goto done
 set NAME=%1
 set REF=%2
+set PAD=%3
+shift
 shift
 shift
 set T=%OUT%\src-%NAME%
 set B=%OUT%\b-%NAME%
-if not exist "%T%" git worktree add --detach "%T%" %REF% || exit /b 1
-cmake -S "%T%" -B "%B%" -A %PLAT% -DLIBDEFLATE_BUILD_GZIP=OFF -DLIBDEFLATE_BUILD_SHARED_LIB=OFF || exit /b 1
+if exist "%T%" goto havetree
+git worktree add --detach "%T%" %REF% || exit /b 1
+type "%HERE%r13pad.c" >> "%T%\lib\deflate_compress.c" || exit /b 1
+:havetree
+cmake -S "%T%" -B "%B%" -A %PLAT% -DLIBDEFLATE_BUILD_GZIP=OFF -DLIBDEFLATE_BUILD_SHARED_LIB=OFF "-DCMAKE_C_FLAGS=/DWIN32 /D_WINDOWS /DR13_PAD=%PAD%" || exit /b 1
 cmake --build "%B%" --config Release -- /v:n > "%OUT%\%NAME%.buildlog" || exit /b 1
 rem CMake's Release flags for the library are /O2 /DNDEBUG /std:c11 with the
 rem static runtime, so msbench uses /MT too.

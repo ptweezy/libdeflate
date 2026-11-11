@@ -10,14 +10,16 @@ concurrency:
   group: r13-msvc-${{ github.ref }}
   cancel-in-progress: true
 env:
-  # name ref pairs.  The library is built with CMake (Release), as a user
-  # builds it, and msbench is linked against the static library.  nb is
-  # upstream master a8cac98, nc and ncb are the item-walk commit 2a3efca on
-  # it (ncb is the A/A control).
-  REFS: nb a8cac98 nc 2a3efca ncb 2a3efca
-  NAMES: nb,nc,ncb
-  EXPECT: nb:x,nc:x,ncb:x
-  PAIRS: nc:ncb,nb:nc
+  # name ref pad triples.  The library is built with CMake (Release) and
+  # msbench is linked against the static library.  a8cac98 is upstream
+  # master and 2a3efca is the item-walk commit on it.  The commit moves
+  # deflate_find_min_cost_path_simd() by 16 bytes with MSVC arm64; nbp pads
+  # master by 16 bytes to match nc, and ncp pads the commit by 48 bytes to
+  # match nb0 modulo 64.
+  REFS: nb0 a8cac98 0 nbp a8cac98 16 nc 2a3efca 0 ncp 2a3efca 48
+  NAMES: nb0,nbp,nc,ncp
+  EXPECT: nb0:x,nbp:x,nc:x,ncp:x
+  PAIRS: nbp:nc,nb0:ncp,nb0:nbp,nb0:nc
 jobs:
   prep:
     runs-on: ubuntu-24.04
@@ -37,16 +39,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, x86, arm64]
+        arch: [arm64]
         set: [real]
         shard: [1, 2, 3, 4]
-        include:
-        - arch: x64
-          runner: windows-2025
-        - arch: x86
-          runner: windows-2025
-        - arch: arm64
-          runner: windows-11-arm
+        runner: [windows-11-arm]
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
