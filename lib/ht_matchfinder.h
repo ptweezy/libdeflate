@@ -231,4 +231,124 @@ ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
 	*next_hash = hash;
 }
 
+/*
+ * ht_matchfinder_longest_match_small() and ht_matchfinder_skip_bytes_small()
+ * are for an input of at most MATCHFINDER_WINDOW_SIZE bytes for which the hash
+ * table was *not* initialized.  The table may contain anything that earlier
+ * inputs left in it.
+ *
+ * The input's positions are numbered from @base, and an entry is used only if
+ * it is a position of this input that precedes the current one.  A leftover
+ * entry that passes this test cannot match.  If its 4 bytes equaled the
+ * current 4 bytes, their hashes would be equal too, so that position would
+ * have been inserted into this bucket for this input already, and the entry
+ * would not be a leftover.  The matches found are therefore exactly the ones
+ * found with an initialized table.
+ *
+ * @base only spreads the leftover entries over the position space so that
+ * they are rarely in the valid range; see deflate_take_small_base().
+ */
+static forceinline u32
+ht_matchfinder_longest_match_small(struct ht_matchfinder * const mf,
+				   const u8 * const in_begin,
+				   const u8 * const in_next,
+				   const u32 max_len,
+				   const u32 nice_len,
+				   const u32 base,
+				   u32 * const next_hash,
+				   u32 * const offset_ret)
+{
+	u32 best_len = 0;
+	const u8 *best_matchptr = in_next;
+	const u32 cur_idx = in_next - in_begin;
+	u32 hash;
+	u32 seq;
+	u32 len;
+	mf_pos_t cur_node;
+	mf_pos_t to_insert;
+	const u8 *matchptr;
+
+	STATIC_ASSERT(HT_MATCHFINDER_MIN_MATCH_LEN == 4);
+	STATIC_ASSERT(HT_MATCHFINDER_BUCKET_SIZE == 2);
+	STATIC_ASSERT(HT_MATCHFINDER_REQUIRED_NBYTES == 5);
+
+/* Is @node a position of this input that precedes the current position? */
+#define HT_SMALL_VALID(node)	((u32)((node) - base) < cur_idx)
+
+	hash = *next_hash;
+	*next_hash = lz_hash(get_unaligned_le32(in_next + 1),
+			     HT_MATCHFINDER_HASH_ORDER);
+	seq = load_u32_unaligned(in_next);
+	prefetchw(&mf->hash_tab[*next_hash]);
+
+	cur_node = mf->hash_tab[hash][0];
+	mf->hash_tab[hash][0] = base + cur_idx;
+	if (!HT_SMALL_VALID(cur_node))
+		goto out;
+	matchptr = &in_begin[cur_node - base];
+
+	to_insert = cur_node;
+	cur_node = mf->hash_tab[hash][1];
+	mf->hash_tab[hash][1] = to_insert;
+
+	if (load_u32_unaligned(matchptr) == seq) {
+		best_len = lz_extend(in_next, matchptr, 4, max_len);
+		best_matchptr = matchptr;
+		if (!HT_SMALL_VALID(cur_node) || best_len >= nice_len)
+			goto out;
+		matchptr = &in_begin[cur_node - base];
+		if (load_u32_unaligned(matchptr) == seq &&
+		    load_u32_unaligned(matchptr + best_len - 3) ==
+		    load_u32_unaligned(in_next + best_len - 3)) {
+			len = lz_extend(in_next, matchptr, 4, max_len);
+			if (len > best_len) {
+				best_len = len;
+				best_matchptr = matchptr;
+			}
+		}
+	} else {
+		if (!HT_SMALL_VALID(cur_node))
+			goto out;
+		matchptr = &in_begin[cur_node - base];
+		if (load_u32_unaligned(matchptr) == seq) {
+			best_len = lz_extend(in_next, matchptr, 4, max_len);
+			best_matchptr = matchptr;
+		}
+	}
+out:
+#undef HT_SMALL_VALID
+	*offset_ret = in_next - best_matchptr;
+	return best_len;
+}
+
+static forceinline void
+ht_matchfinder_skip_bytes_small(struct ht_matchfinder * const mf,
+				const u8 * const in_begin,
+				const u8 *in_next,
+				const u8 * const in_end,
+				const u32 count,
+				const u32 base,
+				u32 * const next_hash)
+{
+	u32 cur_pos = base + (u32)(in_next - in_begin);
+	u32 hash;
+	u32 remaining = count;
+
+	if (unlikely(count + HT_MATCHFINDER_REQUIRED_NBYTES > in_end - in_next))
+		return;
+
+	hash = *next_hash;
+	do {
+		mf->hash_tab[hash][1] = mf->hash_tab[hash][0];
+		mf->hash_tab[hash][0] = cur_pos;
+
+		hash = lz_hash(get_unaligned_le32(++in_next),
+			       HT_MATCHFINDER_HASH_ORDER);
+		cur_pos++;
+	} while (--remaining);
+
+	prefetchw(&mf->hash_tab[hash]);
+	*next_hash = hash;
+}
+
 #endif /* LIB_HT_MATCHFINDER_H */
