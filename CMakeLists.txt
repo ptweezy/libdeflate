@@ -201,11 +201,14 @@ if(LIBDEFLATE_COMPRESSION_SUPPORT)
          lib/arm/find_min_cost_path.h
          lib/arm/matchfinder_impl.h
          lib/bt_matchfinder.h
+         lib/bt_matchfinder_template.h
          lib/deflate_compress.c
          lib/deflate_compress.h
          lib/find_min_cost_path_template.h
          lib/hc_matchfinder.h
+         lib/hc_matchfinder_template.h
          lib/ht_matchfinder.h
+         lib/ht_matchfinder_template.h
          lib/matchfinder_common.h
          lib/riscv/matchfinder_impl.h
          lib/x86/find_min_cost_path.h

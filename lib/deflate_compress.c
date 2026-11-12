@@ -2600,7 +2600,8 @@ deflate_compress_fastest_generic(struct libdeflate_compressor * restrict c,
 							      max_len,
 							      nice_len,
 							      &next_hash,
-							      &offset, small,
+							      &offset,
+							      small,
 							      small_base);
 			if (length) {
 				/* Match found */
@@ -2612,7 +2613,7 @@ deflate_compress_fastest_generic(struct libdeflate_compressor * restrict c,
 							  in_end,
 							  length - 1,
 							  &next_hash,
-							  small_base);
+							  small, small_base);
 				in_next += length;
 			} else {
 				/* No match found */
@@ -2723,7 +2724,7 @@ deflate_compress_greedy_generic(struct libdeflate_compressor * restrict c,
 							  length - 1,
 							  next_hashes,
 							  GREEDY_MULTI_HOP,
-							  small_base);
+							  small, small_base);
 				in_next += length;
 			} else {
 				/* No match found */
@@ -2855,7 +2856,7 @@ have_cur_match:
 							  cur_len - 1,
 							  next_hashes,
 							  LAZY_MULTI_HOP,
-							  small_base);
+							  small, small_base);
 				in_next += cur_len - 1;
 				continue;
 			}
@@ -2952,6 +2953,7 @@ have_cur_match:
 								  cur_len - 3,
 								  next_hashes,
 								  LAZY_MULTI_HOP,
+								  small,
 								  small_base);
 					in_next += cur_len - 3;
 				}
@@ -2969,7 +2971,7 @@ have_cur_match:
 							  cur_len - 2,
 							  next_hashes,
 							  LAZY_MULTI_HOP,
-							  small_base);
+							  small, small_base);
 				in_next += cur_len - 2;
 			}
 			/* Check if it's time to output another block. */

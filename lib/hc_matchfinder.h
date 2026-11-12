@@ -265,6 +265,19 @@ hc_matchfinder_slide_window(struct hc_matchfinder *mf, bool multi_hop)
 }
 
 /*
+ * hc_matchfinder_longest_match() and hc_matchfinder_skip_bytes() are compiled
+ * twice from hc_matchfinder_template.h: for inputs in general, and for small
+ * inputs.  See "Small inputs" in matchfinder_common.h.
+ */
+#define SUFFIX		_normal
+#define SMALL_INPUT	0
+#include "hc_matchfinder_template.h"
+
+#define SUFFIX		_small
+#define SMALL_INPUT	1
+#include "hc_matchfinder_template.h"
+
+/*
  * Find the longest match longer than 'best_len' bytes.
  *
  * @mf
@@ -293,6 +306,11 @@ hc_matchfinder_slide_window(struct hc_matchfinder *mf, bool multi_hop)
  *	If a match is found, its offset is returned in this location.
  * @multi_hop
  *	Whether to use multi-hop links; see 'next_tab'.
+ * @small
+ *	Whether the input is small; see "Small inputs" in matchfinder_common.h.
+ *	This must be a compile-time constant.
+ * @small_base
+ *	If @small, the position of the first byte of the input.
  *
  * Return the length of the match found, or 'best_len' if no match longer than
  * 'best_len' was found.
@@ -311,198 +329,19 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 			     const bool small,
 			     const s32 small_base)
 {
-	u32 depth_remaining = max_search_depth;
-	const u8 *best_matchptr = in_next;
-	mf_pos_t cur_node3, cur_node4;
-	hc_link_t cur_link = 0; /* nodes after cur_node4 (if multi_hop) */
-	hc_link_t next_link = 0; /* link of the last node in 'cur_link' */
-	unsigned link_remaining = 0; /* number of nodes left in 'cur_link' */
-	u32 hash3, hash4;
-	u32 next_hashseq;
-	u32 seq4;
-	const u8 *matchptr;
-	u32 len;
-	u32 cur_pos = in_next - *in_base_p + small_base;
-	const u8 *in_base;
-	mf_pos_t cutoff;
-
-	if (cur_pos == MATCHFINDER_WINDOW_SIZE) {
-		hc_matchfinder_slide_window(mf, multi_hop);
-		*in_base_p += MATCHFINDER_WINDOW_SIZE;
-		cur_pos = 0;
-	}
-
-	in_base = *in_base_p;
-	cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
-
-	if (unlikely(max_len < 5)) /* can we read 4 bytes from 'in_next + 1'? */
-		goto out;
-
-	/* Get the precomputed hash codes.  */
-	hash3 = next_hashes[0];
-	hash4 = next_hashes[1];
-
-	/* From the hash buckets, get the first node of each linked list.  */
-	cur_node3 = mf->hash3_tab[hash3];
-	cur_node4 = mf->hash4_tab[hash4];
-
-	/* Update for length 3 matches.  This replaces the singleton node in the
-	 * 'hash3' bucket with the node for the current sequence.  */
-	mf->hash3_tab[hash3] = cur_pos;
-
-	/* Update for length 4 matches.  This prepends the node for the current
-	 * sequence to the linked list in the 'hash4' bucket.  */
-	mf->hash4_tab[hash4] = cur_pos;
-	cur_link = hc_matchfinder_prepend(mf, cur_pos, cur_node4, multi_hop);
-
-	/* Compute the next hash codes.  */
-	next_hashseq = get_unaligned_le32(in_next + 1);
-	next_hashes[0] = lz_hash(next_hashseq & 0xFFFFFF, HC_MATCHFINDER_HASH3_ORDER);
-	next_hashes[1] = lz_hash(next_hashseq, HC_MATCHFINDER_HASH4_ORDER);
-	prefetchw(&mf->hash3_tab[next_hashes[0]]);
-	prefetchw(&mf->hash4_tab[next_hashes[1]]);
-
-/*
- * Prepare to walk the linked list.  'cur_link' contains the nodes that follow
- * the first node.  Already start loading the link of the last of them, so that
- * it will hopefully be available by the time it's needed.
- */
-#define HC_BEGIN_WALK()							\
-	do {								\
-		if (multi_hop) {					\
-			link_remaining = HC_MATCHFINDER_HOPS_PER_WORD;	\
-			next_link = hc_matchfinder_get_link(mf,		\
-						hc_last_hop(cur_link));	\
-		}							\
-	} while (0)
-
-/* Advance to the next node in the linked list.  */
-#define HC_ADVANCE()							\
-	do {								\
-		if (!multi_hop) {					\
-			cur_node4 = mf->next_tab.single_hop[cur_node4 &	\
-					(MATCHFINDER_WINDOW_SIZE - 1)];	\
-		} else {						\
-			cur_node4 = (mf_pos_t)cur_link;			\
-			if (--link_remaining != 0) {			\
-				cur_link >>= 16;			\
-			} else {					\
-				/* cur_node4 is the last node of the	\
-				 * old 'cur_link', so 'next_link' is	\
-				 * its link.  Use it, and start loading	\
-				 * the link of its last node.  */	\
-				cur_link = next_link;			\
-				link_remaining =			\
-					HC_MATCHFINDER_HOPS_PER_WORD;	\
-				next_link = hc_matchfinder_get_link(mf,	\
-						hc_last_hop(cur_link));	\
-			}						\
-		}							\
-	} while (0)
-
-	if (best_len < 4) {  /* No match of length >= 4 found yet?  */
-
-		/* Check for a length 3 match if needed.  */
-
-		if (!MATCHFINDER_NODE_VALID(cur_node3))
-			goto out;
-
-		seq4 = load_u32_unaligned(in_next);
-
-		if (best_len < 3) {
-			matchptr = &in_base[cur_node3 - small_base];
-			if (load_u24_unaligned(matchptr) == loaded_u32_to_u24(seq4)) {
-				best_len = 3;
-				best_matchptr = matchptr;
-			}
-		}
-
-		/* Check for a length 4 match.  */
-
-		if (!MATCHFINDER_NODE_VALID(cur_node4))
-			goto out;
-
-		HC_BEGIN_WALK();
-		for (;;) {
-			/* No length 4 match found yet.  Check the first 4 bytes.  */
-			matchptr = &in_base[cur_node4 - small_base];
-
-			if (load_u32_unaligned(matchptr) == seq4)
-				break;
-
-			/* The first 4 bytes did not match.  Keep trying.  */
-			HC_ADVANCE();
-			if (!MATCHFINDER_NODE_VALID(cur_node4) ||
-			    !--depth_remaining)
-				goto out;
-		}
-
-		/* Found a match of length >= 4.  Extend it to its full length.  */
-		best_matchptr = matchptr;
-		best_len = lz_extend(in_next, best_matchptr, 4, max_len);
-		if (best_len >= nice_len)
-			goto out;
-		HC_ADVANCE();
-		if (!MATCHFINDER_NODE_VALID(cur_node4) || !--depth_remaining)
-			goto out;
-	} else {
-		if (!MATCHFINDER_NODE_VALID(cur_node4) || best_len >= nice_len)
-			goto out;
-		HC_BEGIN_WALK();
-	}
-
-	/* Check for matches of length >= 5.  */
-
-	for (;;) {
-		for (;;) {
-			matchptr = &in_base[cur_node4 - small_base];
-
-			/* Already found a length 4 match.  Try for a longer
-			 * match; start by checking either the last 4 bytes and
-			 * the first 4 bytes, or the last byte.  (The last byte,
-			 * the one which would extend the match length by 1, is
-			 * the most important.)  */
-		#if UNALIGNED_ACCESS_IS_FAST
-			if ((load_u32_unaligned(matchptr + best_len - 3) ==
-			     load_u32_unaligned(in_next + best_len - 3)) &&
-			    (load_u32_unaligned(matchptr) ==
-			     load_u32_unaligned(in_next)))
-		#else
-			if (matchptr[best_len] == in_next[best_len])
-		#endif
-				break;
-
-			/* Continue to the next node in the list.  */
-			HC_ADVANCE();
-			if (!MATCHFINDER_NODE_VALID(cur_node4) ||
-			    !--depth_remaining)
-				goto out;
-		}
-
-	#if UNALIGNED_ACCESS_IS_FAST
-		len = 4;
-	#else
-		len = 0;
-	#endif
-		len = lz_extend(in_next, matchptr, len, max_len);
-		if (len > best_len) {
-			/* This is the new longest match.  */
-			best_len = len;
-			best_matchptr = matchptr;
-			if (best_len >= nice_len)
-				goto out;
-		}
-
-		/* Continue to the next node in the list.  */
-		HC_ADVANCE();
-		if (!MATCHFINDER_NODE_VALID(cur_node4) || !--depth_remaining)
-			goto out;
-	}
-#undef HC_BEGIN_WALK
-#undef HC_ADVANCE
-out:
-	*offset_ret = in_next - best_matchptr;
-	return best_len;
+	if (small)
+		return hc_matchfinder_longest_match_small(mf, in_base_p,
+							  in_next, best_len,
+							  max_len, nice_len,
+							  max_search_depth,
+							  next_hashes,
+							  offset_ret, multi_hop,
+							  small_base);
+	return hc_matchfinder_longest_match_normal(mf, in_base_p, in_next,
+						   best_len, max_len, nice_len,
+						   max_search_depth,
+						   next_hashes, offset_ret,
+						   multi_hop);
 }
 
 /*
@@ -526,6 +365,9 @@ out:
  *	the sequence beginning at @in_next + @count.
  * @multi_hop
  *	Whether to use multi-hop links; see 'next_tab'.
+ * @small
+ * @small_base
+ *	See hc_matchfinder_longest_match().
  */
 static forceinline void
 hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
@@ -535,40 +377,16 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 			  const u32 count,
 			  u32 * const next_hashes,
 			  const bool multi_hop,
+			  const bool small,
 			  const s32 small_base)
 {
-	u32 cur_pos;
-	u32 hash3, hash4;
-	u32 next_hashseq;
-	u32 remaining = count;
-
-	if (unlikely(count + 5 > in_end - in_next))
-		return;
-
-	cur_pos = in_next - *in_base_p + small_base;
-	hash3 = next_hashes[0];
-	hash4 = next_hashes[1];
-	do {
-		if (cur_pos == MATCHFINDER_WINDOW_SIZE) {
-			hc_matchfinder_slide_window(mf, multi_hop);
-			*in_base_p += MATCHFINDER_WINDOW_SIZE;
-			cur_pos = 0;
-		}
-		mf->hash3_tab[hash3] = cur_pos;
-		hc_matchfinder_prepend(mf, cur_pos, mf->hash4_tab[hash4],
-				       multi_hop);
-		mf->hash4_tab[hash4] = cur_pos;
-
-		next_hashseq = get_unaligned_le32(++in_next);
-		hash3 = lz_hash(next_hashseq & 0xFFFFFF, HC_MATCHFINDER_HASH3_ORDER);
-		hash4 = lz_hash(next_hashseq, HC_MATCHFINDER_HASH4_ORDER);
-		cur_pos++;
-	} while (--remaining);
-
-	prefetchw(&mf->hash3_tab[hash3]);
-	prefetchw(&mf->hash4_tab[hash4]);
-	next_hashes[0] = hash3;
-	next_hashes[1] = hash4;
+	if (small)
+		hc_matchfinder_skip_bytes_small(mf, in_base_p, in_next, in_end,
+						count, next_hashes, multi_hop,
+						small_base);
+	else
+		hc_matchfinder_skip_bytes_normal(mf, in_base_p, in_next, in_end,
+						 count, next_hashes, multi_hop);
 }
 
 #endif /* LIB_HC_MATCHFINDER_H */
