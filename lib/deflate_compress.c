@@ -498,13 +498,30 @@ struct block_split_stats {
 };
 
 struct deflate_output_bitstream;
+struct libdeflate_compressor;
+
+/* A compress() implementation */
+struct deflate_impl {
+
+	/* The function for inputs in general */
+	void (*compress)(struct libdeflate_compressor *restrict c, const u8 *in,
+			 size_t in_nbytes, struct deflate_output_bitstream *os);
+
+	/*
+	 * The function for inputs of at most 'max_small_nbytes' bytes; see
+	 * "Small inputs" in matchfinder_common.h.  Not used if that is 0.
+	 */
+	void (*compress_small)(struct libdeflate_compressor *restrict c,
+			       const u8 *in, size_t in_nbytes,
+			       struct deflate_output_bitstream *os);
+	size_t max_small_nbytes;
+};
 
 /* The main DEFLATE compressor structure */
 struct libdeflate_compressor {
 
-	/* Pointer to the compress() implementation chosen at allocation time */
-	void (*impl)(struct libdeflate_compressor *restrict c, const u8 *in,
-		     size_t in_nbytes, struct deflate_output_bitstream *os);
+	/* The compress() implementation chosen at allocation time */
+	const struct deflate_impl *impl;
 
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
@@ -2519,86 +2536,6 @@ deflate_compress_none(const u8 *in, size_t in_nbytes,
 }
 
 /*
- * This is a faster variant of deflate_compress_greedy().  It uses the
- * ht_matchfinder rather than the hc_matchfinder.  It also skips the block
- * splitting algorithm and just uses fixed length blocks.  c->max_search_depth
- * has no effect with this algorithm, as it is hardcoded in ht_matchfinder.h.
- */
-static void
-deflate_compress_fastest(struct libdeflate_compressor * restrict c,
-			 const u8 *in, size_t in_nbytes,
-			 struct deflate_output_bitstream *os)
-{
-	const u8 *in_next = in;
-	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
-	u32 max_len = DEFLATE_MAX_MATCH_LEN;
-	u32 nice_len = MIN(c->nice_match_length, max_len);
-	u32 next_hash = 0;
-
-	ht_matchfinder_init(&c->p.f.ht_mf);
-
-	do {
-		/* Starting a new DEFLATE block */
-
-		const u8 * const in_block_begin = in_next;
-		const u8 * const in_max_block_end = choose_max_block_end(
-				in_next, in_end, FAST_SOFT_MAX_BLOCK_LENGTH);
-		struct deflate_sequence *seq = c->p.f.sequences;
-
-		deflate_begin_sequences(c, seq);
-
-		do {
-			u32 length;
-			u32 offset;
-			size_t remaining = in_end - in_next;
-
-			if (unlikely(remaining < DEFLATE_MAX_MATCH_LEN)) {
-				max_len = remaining;
-				if (max_len < HT_MATCHFINDER_REQUIRED_NBYTES) {
-					do {
-						deflate_choose_literal(c,
-							*in_next++, false, seq);
-					} while (--max_len);
-					break;
-				}
-				nice_len = MIN(nice_len, max_len);
-			}
-			length = ht_matchfinder_longest_match(&c->p.f.ht_mf,
-							      &in_cur_base,
-							      in_next,
-							      max_len,
-							      nice_len,
-							      &next_hash,
-							      &offset);
-			if (length) {
-				/* Match found */
-				deflate_choose_match(c, length, offset, false,
-						     &seq);
-				ht_matchfinder_skip_bytes(&c->p.f.ht_mf,
-							  &in_cur_base,
-							  in_next + 1,
-							  in_end,
-							  length - 1,
-							  &next_hash);
-				in_next += length;
-			} else {
-				/* No match found */
-				deflate_choose_literal(c, *in_next++, false,
-						       seq);
-			}
-
-			/* Check if it's time to output another block. */
-		} while (in_next < in_max_block_end &&
-			 seq < &c->p.f.sequences[FAST_SEQ_STORE_LENGTH]);
-
-		deflate_finish_block(c, os, in_block_begin,
-				     in_next - in_block_begin,
-				     c->p.f.sequences, in_next == in_end);
-	} while (in_next != in_end && !os->overflow);
-}
-
-/*
  * Whether the greedy and lazy compressors use multi-hop links in the hash
  * chains matchfinder (see 'next_tab' in hc_matchfinder.h).  Multi-hop links
  * make searching faster but inserting slower, so they pay off only for the
@@ -2609,323 +2546,41 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 #define LAZY_MULTI_HOP		true
 
 /*
- * This is the "greedy" DEFLATE compressor. It always chooses the longest match.
+ * The compressors of levels 1 to 9 are in compress_template.h, which is
+ * compiled twice: for inputs in general, and with the suffix "_small" for
+ * small inputs; see "Small inputs" in matchfinder_common.h.
  */
-static void
-deflate_compress_greedy(struct libdeflate_compressor * restrict c,
-			const u8 *in, size_t in_nbytes,
-			struct deflate_output_bitstream *os)
-{
-	const u8 *in_next = in;
-	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
-	u32 max_len = DEFLATE_MAX_MATCH_LEN;
-	u32 nice_len = MIN(c->nice_match_length, max_len);
-	u32 next_hashes[2] = {0, 0};
+#define SUFFIX
+#define SMALL_INPUT	0
+#include "compress_template.h"
 
-	hc_matchfinder_init(&c->p.g.hc_mf, GREEDY_MULTI_HOP);
+#define SUFFIX		_small
+#define SMALL_INPUT	1
+#include "compress_template.h"
 
-	do {
-		/* Starting a new DEFLATE block */
+static const struct deflate_impl deflate_impl_fastest = {
+	deflate_compress_fastest,
+	deflate_compress_fastest_small,
+	HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
+};
 
-		const u8 * const in_block_begin = in_next;
-		const u8 * const in_max_block_end = choose_max_block_end(
-				in_next, in_end, SOFT_MAX_BLOCK_LENGTH);
-		struct deflate_sequence *seq = c->p.g.sequences;
-		u32 min_len;
+static const struct deflate_impl deflate_impl_greedy = {
+	deflate_compress_greedy,
+	deflate_compress_greedy_small,
+	HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
+};
 
-		init_block_split_stats(&c->split_stats);
-		deflate_begin_sequences(c, seq);
-		min_len = calculate_min_match_len(in_next,
-						  in_max_block_end - in_next,
-						  c->max_search_depth);
-		do {
-			u32 length;
-			u32 offset;
+static const struct deflate_impl deflate_impl_lazy = {
+	deflate_compress_lazy,
+	deflate_compress_lazy_small,
+	HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
+};
 
-			adjust_max_and_nice_len(&max_len, &nice_len,
-						in_end - in_next);
-			length = hc_matchfinder_longest_match(
-						&c->p.g.hc_mf,
-						&in_cur_base,
-						in_next,
-						min_len - 1,
-						max_len,
-						nice_len,
-						c->max_search_depth,
-						next_hashes,
-						&offset,
-						GREEDY_MULTI_HOP);
-
-			if (length >= min_len &&
-			    (length > DEFLATE_MIN_MATCH_LEN ||
-			     offset <= 4096)) {
-				/* Match found */
-				deflate_choose_match(c, length, offset, true,
-						     &seq);
-				hc_matchfinder_skip_bytes(&c->p.g.hc_mf,
-							  &in_cur_base,
-							  in_next + 1,
-							  in_end,
-							  length - 1,
-							  next_hashes,
-							  GREEDY_MULTI_HOP);
-				in_next += length;
-			} else {
-				/* No match found */
-				deflate_choose_literal(c, *in_next++, true,
-						       seq);
-			}
-
-			/* Check if it's time to output another block. */
-		} while (in_next < in_max_block_end &&
-			 seq < &c->p.g.sequences[SEQ_STORE_LENGTH] &&
-			 !should_end_block(&c->split_stats,
-					   in_block_begin, in_next, in_end));
-
-		deflate_finish_block(c, os, in_block_begin,
-				     in_next - in_block_begin,
-				     c->p.g.sequences, in_next == in_end);
-	} while (in_next != in_end && !os->overflow);
-}
-
-static forceinline void
-deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
-			      const u8 *in, size_t in_nbytes,
-			      struct deflate_output_bitstream *os, bool lazy2)
-{
-	const u8 *in_next = in;
-	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
-	u32 max_len = DEFLATE_MAX_MATCH_LEN;
-	u32 nice_len = MIN(c->nice_match_length, max_len);
-	u32 next_hashes[2] = {0, 0};
-
-	hc_matchfinder_init(&c->p.g.hc_mf, LAZY_MULTI_HOP);
-
-	do {
-		/* Starting a new DEFLATE block */
-
-		const u8 * const in_block_begin = in_next;
-		const u8 * const in_max_block_end = choose_max_block_end(
-				in_next, in_end, SOFT_MAX_BLOCK_LENGTH);
-		const u8 *next_recalc_min_len =
-			in_next + MIN(in_end - in_next, 10000);
-		struct deflate_sequence *seq = c->p.g.sequences;
-		u32 min_len;
-
-		init_block_split_stats(&c->split_stats);
-		deflate_begin_sequences(c, seq);
-		min_len = calculate_min_match_len(in_next,
-						  in_max_block_end - in_next,
-						  c->max_search_depth);
-		do {
-			u32 cur_len;
-			u32 cur_offset;
-			u32 next_len;
-			u32 next_offset;
-
-			/*
-			 * Recalculate the minimum match length if it hasn't
-			 * been done recently.
-			 */
-			if (in_next >= next_recalc_min_len) {
-				min_len = recalculate_min_match_len(
-						&c->freqs,
-						c->max_search_depth);
-				next_recalc_min_len +=
-					MIN(in_end - next_recalc_min_len,
-					    in_next - in_block_begin);
-			}
-
-			/* Find the longest match at the current position. */
-			adjust_max_and_nice_len(&max_len, &nice_len,
-						in_end - in_next);
-			cur_len = hc_matchfinder_longest_match(
-						&c->p.g.hc_mf,
-						&in_cur_base,
-						in_next,
-						min_len - 1,
-						max_len,
-						nice_len,
-						c->max_search_depth,
-						next_hashes,
-						&cur_offset,
-						LAZY_MULTI_HOP);
-			if (cur_len < min_len ||
-			    (cur_len == DEFLATE_MIN_MATCH_LEN &&
-			     cur_offset > 8192)) {
-				/* No match found.  Choose a literal. */
-				deflate_choose_literal(c, *in_next++, true,
-						       seq);
-				continue;
-			}
-			in_next++;
-
-have_cur_match:
-			/*
-			 * We have a match at the current position.
-			 * If it's very long, choose it immediately.
-			 */
-			if (cur_len >= nice_len) {
-				deflate_choose_match(c, cur_len, cur_offset,
-						     true, &seq);
-				hc_matchfinder_skip_bytes(&c->p.g.hc_mf,
-							  &in_cur_base,
-							  in_next,
-							  in_end,
-							  cur_len - 1,
-							  next_hashes,
-							  LAZY_MULTI_HOP);
-				in_next += cur_len - 1;
-				continue;
-			}
-
-			/*
-			 * Try to find a better match at the next position.
-			 *
-			 * Note: since we already have a match at the *current*
-			 * position, we use only half the 'max_search_depth'
-			 * when checking the *next* position.  This is a useful
-			 * trade-off because it's more worthwhile to use a
-			 * greater search depth on the initial match.
-			 *
-			 * Note: it's possible to structure the code such that
-			 * there's only one call to longest_match(), which
-			 * handles both the "find the initial match" and "try to
-			 * find a better match" cases.  However, it is faster to
-			 * have two call sites, with longest_match() inlined at
-			 * each.
-			 */
-			adjust_max_and_nice_len(&max_len, &nice_len,
-						in_end - in_next);
-			next_len = hc_matchfinder_longest_match(
-						&c->p.g.hc_mf,
-						&in_cur_base,
-						in_next++,
-						cur_len - 1,
-						max_len,
-						nice_len,
-						c->max_search_depth >> 1,
-						next_hashes,
-						&next_offset,
-						LAZY_MULTI_HOP);
-			if (next_len >= cur_len &&
-			    4 * (int)(next_len - cur_len) +
-			    ((int)bsr32(cur_offset) -
-			     (int)bsr32(next_offset)) > 2) {
-				/*
-				 * Found a better match at the next position.
-				 * Output a literal.  Then the next match
-				 * becomes the current match.
-				 */
-				deflate_choose_literal(c, *(in_next - 2), true,
-						       seq);
-				cur_len = next_len;
-				cur_offset = next_offset;
-				goto have_cur_match;
-			}
-
-			if (lazy2) {
-				/* In lazy2 mode, look ahead another position */
-				adjust_max_and_nice_len(&max_len, &nice_len,
-							in_end - in_next);
-				next_len = hc_matchfinder_longest_match(
-						&c->p.g.hc_mf,
-						&in_cur_base,
-						in_next++,
-						cur_len - 1,
-						max_len,
-						nice_len,
-						c->max_search_depth >> 2,
-						next_hashes,
-						&next_offset,
-						LAZY_MULTI_HOP);
-				if (next_len >= cur_len &&
-				    4 * (int)(next_len - cur_len) +
-				    ((int)bsr32(cur_offset) -
-				     (int)bsr32(next_offset)) > 6) {
-					/*
-					 * There's a much better match two
-					 * positions ahead, so use two literals.
-					 */
-					deflate_choose_literal(
-						c, *(in_next - 3), true, seq);
-					deflate_choose_literal(
-						c, *(in_next - 2), true, seq);
-					cur_len = next_len;
-					cur_offset = next_offset;
-					goto have_cur_match;
-				}
-				/*
-				 * No better match at either of the next 2
-				 * positions.  Output the current match.
-				 */
-				deflate_choose_match(c, cur_len, cur_offset,
-						     true, &seq);
-				if (cur_len > 3) {
-					hc_matchfinder_skip_bytes(&c->p.g.hc_mf,
-								  &in_cur_base,
-								  in_next,
-								  in_end,
-								  cur_len - 3,
-								  next_hashes,
-								  LAZY_MULTI_HOP);
-					in_next += cur_len - 3;
-				}
-			} else { /* !lazy2 */
-				/*
-				 * No better match at the next position.  Output
-				 * the current match.
-				 */
-				deflate_choose_match(c, cur_len, cur_offset,
-						     true, &seq);
-				hc_matchfinder_skip_bytes(&c->p.g.hc_mf,
-							  &in_cur_base,
-							  in_next,
-							  in_end,
-							  cur_len - 2,
-							  next_hashes,
-							  LAZY_MULTI_HOP);
-				in_next += cur_len - 2;
-			}
-			/* Check if it's time to output another block. */
-		} while (in_next < in_max_block_end &&
-			 seq < &c->p.g.sequences[SEQ_STORE_LENGTH] &&
-			 !should_end_block(&c->split_stats,
-					   in_block_begin, in_next, in_end));
-
-		deflate_finish_block(c, os, in_block_begin,
-				     in_next - in_block_begin,
-				     c->p.g.sequences, in_next == in_end);
-	} while (in_next != in_end && !os->overflow);
-}
-
-/*
- * This is the "lazy" DEFLATE compressor.  Before choosing a match, it checks to
- * see if there's a better match at the next position.  If yes, it outputs a
- * literal and continues to the next position.  If no, it outputs the match.
- */
-static void
-deflate_compress_lazy(struct libdeflate_compressor * restrict c,
-		      const u8 *in, size_t in_nbytes,
-		      struct deflate_output_bitstream *os)
-{
-	deflate_compress_lazy_generic(c, in, in_nbytes, os, false);
-}
-
-/*
- * The lazy2 compressor.  This is similar to the regular lazy one, but it looks
- * for a better match at the next 2 positions rather than the next 1.  This
- * makes it take slightly more time, but compress some inputs slightly more.
- */
-static void
-deflate_compress_lazy2(struct libdeflate_compressor * restrict c,
-		       const u8 *in, size_t in_nbytes,
-		       struct deflate_output_bitstream *os)
-{
-	deflate_compress_lazy_generic(c, in, in_nbytes, os, true);
-}
+static const struct deflate_impl deflate_impl_lazy2 = {
+	deflate_compress_lazy2,
+	deflate_compress_lazy2_small,
+	HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
+};
 
 #if SUPPORT_NEAR_OPTIMAL_PARSING
 
@@ -4028,11 +3683,18 @@ deflate_init_offset_slot_full(struct libdeflate_compressor *c)
 	}
 }
 
+/* There is no version of the near-optimal compressor for small inputs. */
+static const struct deflate_impl deflate_impl_near_optimal = {
+	deflate_compress_near_optimal,
+	NULL,
+	0,
+};
+
 /* Do common initialization for the "near-optimal" compression levels. */
 static void
 deflate_init_near_optimal_compressor(struct libdeflate_compressor *c)
 {
-	c->impl = deflate_compress_near_optimal;
+	c->impl = &deflate_impl_near_optimal;
 	deflate_init_offset_slot_full(c);
 
 	/*
@@ -4111,42 +3773,42 @@ libdeflate_alloc_compressor_ex(int compression_level,
 		c->impl = NULL; /* not used */
 		break;
 	case 1:
-		c->impl = deflate_compress_fastest;
+		c->impl = &deflate_impl_fastest;
 		/* max_search_depth is unused. */
 		c->nice_match_length = 32;
 		break;
 	case 2:
-		c->impl = deflate_compress_greedy;
+		c->impl = &deflate_impl_greedy;
 		c->max_search_depth = 6;
 		c->nice_match_length = 10;
 		break;
 	case 3:
-		c->impl = deflate_compress_greedy;
+		c->impl = &deflate_impl_greedy;
 		c->max_search_depth = 12;
 		c->nice_match_length = 14;
 		break;
 	case 4:
-		c->impl = deflate_compress_greedy;
+		c->impl = &deflate_impl_greedy;
 		c->max_search_depth = 16;
 		c->nice_match_length = 30;
 		break;
 	case 5:
-		c->impl = deflate_compress_lazy;
+		c->impl = &deflate_impl_lazy;
 		c->max_search_depth = 16;
 		c->nice_match_length = 30;
 		break;
 	case 6:
-		c->impl = deflate_compress_lazy;
+		c->impl = &deflate_impl_lazy;
 		c->max_search_depth = 35;
 		c->nice_match_length = 65;
 		break;
 	case 7:
-		c->impl = deflate_compress_lazy;
+		c->impl = &deflate_impl_lazy;
 		c->max_search_depth = 100;
 		c->nice_match_length = 130;
 		break;
 	case 8:
-		c->impl = deflate_compress_lazy2;
+		c->impl = &deflate_impl_lazy2;
 		c->max_search_depth = 300;
 		c->nice_match_length = DEFLATE_MAX_MATCH_LEN;
 		break;
@@ -4154,7 +3816,7 @@ libdeflate_alloc_compressor_ex(int compression_level,
 #if !SUPPORT_NEAR_OPTIMAL_PARSING
 	default:
 #endif
-		c->impl = deflate_compress_lazy2;
+		c->impl = &deflate_impl_lazy2;
 		c->max_search_depth = 600;
 		c->nice_match_length = DEFLATE_MAX_MATCH_LEN;
 		break;
@@ -4245,7 +3907,10 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.overflow = false;
 
 	/* Call the actual compression function. */
-	(*c->impl)(c, in, in_nbytes, &os);
+	if (in_nbytes <= c->impl->max_small_nbytes)
+		(*c->impl->compress_small)(c, in, in_nbytes, &os);
+	else
+		(*c->impl->compress)(c, in, in_nbytes, &os);
 
 	/* Return 0 if the output buffer is too small. */
 	if (os.overflow)
