@@ -273,12 +273,15 @@ do {									\
 
 /*
  * This is the worst-case maximum number of output bytes that are written to
- * during each iteration of the fastloop.  The worst case is 2 literals, then a
- * match of length DEFLATE_MAX_MATCH_LEN.  Additionally, some slack space must
- * be included for the intentional overrun in the match copy implementation.
+ * during each iteration of the fastloop.  The worst case is 2 fast literals,
+ * each of which is actually a pair of literals, then a match of length
+ * DEFLATE_MAX_MATCH_LEN.  Additionally, some slack space must be included for
+ * the intentional overrun in the match copy implementation.  (That slack is
+ * also more than enough for the 1-byte overrun that occurs when a single
+ * literal is output by the code that also handles pairs of literals.)
  */
 #define FASTLOOP_MAX_BYTES_WRITTEN	\
-	(2 + DEFLATE_MAX_MATCH_LEN + (5 * WORDBYTES) - 1)
+	(4 + DEFLATE_MAX_MATCH_LEN + (5 * WORDBYTES) - 1)
 
 /*
  * This is the worst-case maximum number of input bytes that are read during
@@ -428,6 +431,14 @@ static const u32 precode_decode_results[] = {
 /* Indicates an end-of-block entry in the litlen decode table */
 #define HUFFDEC_END_OF_BLOCK		0x00002000
 
+/*
+ * Indicates an entry in the litlen decode table that contains a pair of
+ * literals; see make_literal_pairs().  HUFFDEC_END_OF_BLOCK is always set too.
+ * This way, code that doesn't care about decoding pairs quickly needs to check
+ * for them only once it has found HUFFDEC_END_OF_BLOCK.
+ */
+#define HUFFDEC_LITERAL_PAIR		0x00001000
+
 /* Maximum number of bits that can be consumed by decoding a match length */
 #define LENGTH_MAXBITS		(DEFLATE_MAX_LITLEN_CODEWORD_LEN + \
 				 DEFLATE_MAX_EXTRA_LENGTH_BITS)
@@ -469,6 +480,18 @@ static const u32 precode_decode_results[] = {
  *		Bit 13:     0 (!HUFFDEC_END_OF_BLOCK)
  *		Bit 11-8:   number of subtable bits
  *		Bit 3-0:    number of main table bits
+ *	Pairs of literals (optional; see make_literal_pairs()):
+ *		Bit 31:     0 (!HUFFDEC_LITERAL)
+ *		Bit 30-24:  low 7 bits of second literal value
+ *		Bit 23-16:  first literal value
+ *		Bit 15:     high bit of second literal value
+ *		Bit 14:     0 (!HUFFDEC_SUBTABLE_POINTER)
+ *		Bit 13:     1 (HUFFDEC_END_OF_BLOCK)
+ *		Bit 12:     1 (HUFFDEC_LITERAL_PAIR)
+ *		Bit 11-8:   codeword length of first literal
+ *		Bit 3-0:    sum of the codeword lengths of both literals
+ *
+ * Bit 12 is 0 in all entries except pairs of literals.
  *
  * This format has several desirable properties:
  *
@@ -497,6 +520,16 @@ static const u32 precode_decode_results[] = {
  *	  needed, making it possible to extract this value with '& 0x3F' rather
  *	  than '& 0xF'.  This value is only used as a shift amount, so this can
  *	  save an 'and' instruction as the masking by 0x3F happens implicitly.
+ *
+ *	- A table that contains pairs of literals is otherwise the same as one
+ *	  that doesn't.  Tables that contain pairs get their own fastloop (see
+ *	  decompress_fastloop.h) which handles a pair like a single literal: it
+ *	  stores the 16 bits consisting of bits 23-16, 30-24 and 15, then
+ *	  advances by 1 + bit 12.  The second literal isn't simply in bits 31-24
+ *	  since bit 31 is HUFFDEC_LITERAL.  Everything else is left unaware of
+ *	  pairs: the other fastloop never sees them, and the remaining code
+ *	  sees them as HUFFDEC_END_OF_BLOCK, which it already has a rarely-taken
+ *	  branch for.  So tables without pairs are decoded exactly as before.
  *
  * litlen_decode_results[] contains the static part of the entry for each
  * symbol.  make_decode_table_entry() produces the final entries.
@@ -629,6 +662,19 @@ static const u32 offset_decode_results[] = {
 };
 
 /*
+ * The state that the main decompression routine exchanges with the fastloop for
+ * litlen decode tables that contain pairs of literals, which is a separate
+ * function.  See decompress_template.h.
+ */
+struct fastloop_state {
+	const u8 *in_next;
+	u8 *out_next;
+	bitbuf_t bitbuf;
+	u32 bitsleft;
+	bool block_done;
+};
+
+/*
  * The main DEFLATE decompressor structure.  Since libdeflate only supports
  * full-buffer decompression, this structure doesn't store the entire
  * decompression state, most of which is in stack variables.  Instead, this
@@ -666,11 +712,28 @@ struct libdeflate_decompressor {
 
 	u32 offset_decode_table[OFFSET_ENOUGH];
 
-	/* used only during build_decode_table() */
+	/*
+	 * Used only during build_decode_table(), and by make_literal_pairs()
+	 * just after the litlen decode table has been built
+	 */
 	u16 sorted_syms[DEFLATE_MAX_NUM_SYMS];
+	u16 len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
 
 	bool static_codes_loaded;
+
+	/* Whether litlen_decode_table contains pairs of literals */
+	bool litlen_has_pairs;
+
 	unsigned litlen_tablebits;
+
+	/*
+	 * When the litlen decode table for a dynamic Huffman block is built,
+	 * the number of bytes of input that remain; otherwise 0
+	 */
+	size_t in_remaining;
+
+	/* See struct fastloop_state. */
+	struct fastloop_state fastloop_state;
 
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
@@ -710,7 +773,11 @@ struct libdeflate_decompressor {
  *	The maximum allowed codeword length for this Huffman code.
  *	Must be <= DEFLATE_MAX_CODEWORD_LEN.
  * @sorted_syms
- *	A temporary array of length @num_syms.
+ *	A temporary array of length @num_syms.  On success, it contains the
+ *	symbols sorted by codeword, starting with the unused symbols.
+ * @len_counts
+ *	An array of length 'DEFLATE_MAX_CODEWORD_LEN + 1' in which the number of
+ *	symbols with each codeword length (including 0) is returned.
  * @table_bits_ret
  *	If non-NULL, then the dynamic table_bits is enabled, and the actual
  *	table_bits value will be returned here.
@@ -726,14 +793,13 @@ build_decode_table(u32 decode_table[],
 		   unsigned table_bits,
 		   unsigned max_codeword_len,
 		   u16 *sorted_syms,
+		   u16 len_counts[],
 		   unsigned *table_bits_ret)
 {
 	union {
 		u16 c[4];
 		u64 w;
 	} part_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
-	/* Initialized only to avoid a gcc -Wmaybe-uninitialized warning */
-	u16 len_counts[DEFLATE_MAX_CODEWORD_LEN + 1] = { 0 };
 	const unsigned part_len = num_syms / 4;
 	unsigned sym;		/* current symbol */
 	unsigned codeword;	/* current codeword, bit-reversed */
@@ -780,6 +846,8 @@ build_decode_table(u32 decode_table[],
 	STATIC_ASSERT(UINT32_MAX / (1U << (DEFLATE_MAX_CODEWORD_LEN - 1)) >=
 		      DEFLATE_MAX_NUM_SYMS);
 	codespace_used = 0;
+	memset(len_counts, 0,
+	       (DEFLATE_MAX_CODEWORD_LEN + 1) * sizeof(len_counts[0]));
 	{
 		unsigned a = part_counts[0].c[0];
 		unsigned b = part_counts[0].c[1];
@@ -1068,7 +1136,228 @@ build_precode_decode_table(struct libdeflate_decompressor *d)
 				  PRECODE_TABLEBITS,
 				  DEFLATE_MAX_PRE_CODEWORD_LEN,
 				  d->sorted_syms,
+				  d->len_counts,
 				  NULL);
+}
+
+/*
+ * Pairs of literals
+ *
+ * Decoding a literal takes a litlen decode table lookup whose index depends on
+ * the codeword length of the previous symbol, which came from the previous
+ * lookup.  A run of literals is therefore decoded only as fast as this chain of
+ * dependent lookups allows, regardless of how many instructions the CPU can
+ * execute at once.  The way to go faster is to decode two literals per lookup.
+ * That is possible whenever the bits that index the main table contain the
+ * complete codewords of two literals: the entry at that index can provide both
+ * literals and the sum of their codeword lengths.  Such an entry is a "pair".
+ *
+ * Many pairs exist only when literals have short codewords.  That is the case
+ * for data that consists mostly of literals from a small or highly skewed
+ * alphabet, e.g. filtered image data and much numeric and tabular data.
+ * Decompression of such data becomes much faster.  With the codes that are
+ * typical for text, few pairs exist, so making them wouldn't be worthwhile.
+ *
+ * Therefore, after the litlen decode table of a dynamic Huffman block has been
+ * built in the usual way, consider_literal_pairs() counts exactly how many pairs
+ * there would be and how many main table entries they would use, and it calls
+ * make_literal_pairs() only if making the pairs is expected to pay off.  The
+ * common case where it doesn't costs just this counting.
+ *
+ * These parameters control the decision:
+ *
+ * LITLEN_PAIRING_MIN_INPUT is the minimum number of bytes of input that must
+ * remain for making pairs to even be considered.
+ *
+ * Pairs are made only if they would use at least
+ * 1/LITLEN_PAIRING_MIN_ENTRIES_DIVISOR of the main table entries.  That
+ * proportion is the probability of a main table lookup producing a pair,
+ * assuming that symbols occur with the probabilities their codeword lengths
+ * imply.
+ *
+ * LITLEN_PAIRING_COST is the number of bytes of input that must remain per pair
+ * made, if every main table lookup were to produce a pair.  When a smaller
+ * proportion of lookups would, proportionally more input is required.
+ */
+#define LITLEN_PAIRING_MIN_INPUT		1024
+#define LITLEN_PAIRING_MAX_INPUT		((size_t)1 << 24)
+#define LITLEN_PAIRING_MIN_ENTRIES_DIVISOR	8
+#define LITLEN_PAIRING_COST			4
+
+/*
+ * Make the pairs of literals in the litlen decode table: change each main table
+ * entry that can be a pair into one.
+ *
+ * @pair_table_bits is the number of main table bits to use.  The table is
+ * expanded to it if needed.  @lit_len_counts[len] is the number of literals
+ * that have codeword length 'len', for '1 <= len < pair_table_bits'.
+ *
+ * This relies on d->sorted_syms and d->len_counts still being as
+ * build_decode_table() left them, and on the code being complete.
+ */
+static NOINLINE void
+make_literal_pairs(struct libdeflate_decompressor *d, unsigned pair_table_bits,
+		   const u16 lit_len_counts[])
+{
+	u32 * const table = d->u.litlen_decode_table;
+	const u16 *sorted_syms = &d->sorted_syms[d->len_counts[0]];
+	/*
+	 * The (bit-reversed) codeword and the decode table entry of each
+	 * literal that has codeword length less than pair_table_bits, in
+	 * lexicographic order of codeword, i.e. primarily by codeword length;
+	 * and for each length, the index in that list of its first literal
+	 */
+	u16 codewords[DEFLATE_NUM_LITERALS];
+	u32 entries[DEFLATE_NUM_LITERALS];
+	u16 first_lit[LITLEN_TABLEBITS + 1];
+	unsigned num_lits = 0;
+	unsigned codeword = 0;
+	unsigned len, len1, len2;
+	unsigned count;
+	unsigned i1, i2;
+
+	ASSERT(pair_table_bits <= LITLEN_TABLEBITS);
+
+	/*
+	 * If the table has fewer than pair_table_bits bits, then expand it.  It
+	 * has no subtables in that case, so this is just duplicating it.
+	 */
+	for (len = d->litlen_tablebits; len < pair_table_bits; len++) {
+		const size_t cur_table_size = (size_t)1 << len;
+
+		memcpy(&table[cur_table_size], table,
+		       cur_table_size * sizeof(table[0]));
+	}
+	d->litlen_tablebits = MAX(d->litlen_tablebits, pair_table_bits);
+
+	/*
+	 * List the literals, by enumerating the codewords in the same way as
+	 * build_decode_table() does.  At this point, the entry at the index
+	 * that is a literal's codeword is still that literal's own entry.
+	 */
+	for (len = 1; len < pair_table_bits; len++) {
+		first_lit[len] = num_lits;
+		for (count = d->len_counts[len]; count != 0; count--) {
+			const unsigned sym = *sorted_syms++;
+			unsigned bit;
+
+			if (sym < DEFLATE_NUM_LITERALS) {
+				codewords[num_lits] = codeword;
+				entries[num_lits] = table[codeword];
+				num_lits++;
+			}
+			if (codeword == (1U << len) - 1) /* last codeword? */
+				break;
+			bit = 1U << bsr32(codeword ^ ((1U << len) - 1));
+			codeword &= bit - 1;
+			codeword |= bit;
+		}
+	}
+	first_lit[pair_table_bits] = num_lits;
+
+	/*
+	 * For each two literals whose codewords fit in the main table index
+	 * together, replace the entries at all the indices which begin with
+	 * those two codewords.  Those are all entries of the first literal.
+	 */
+	for (len1 = 1; len1 < pair_table_bits; len1++) {
+		if (lit_len_counts[len1] == 0)
+			continue;
+		for (len2 = 1; len2 <= pair_table_bits - len1; len2++) {
+			const unsigned stride = 1U << (len1 + len2);
+
+			if (lit_len_counts[len2] == 0)
+				continue;
+			for (i1 = first_lit[len1]; i1 < first_lit[len1 + 1];
+			     i1++) {
+				/*
+				 * Turn the first literal's entry into the part
+				 * of the pair's entry that doesn't depend on
+				 * the second literal.
+				 */
+				const u32 entry1 = entries[i1] -
+						   HUFFDEC_LITERAL +
+						   HUFFDEC_END_OF_BLOCK +
+						   HUFFDEC_LITERAL_PAIR + len2;
+
+				for (i2 = first_lit[len2];
+				     i2 < first_lit[len2 + 1]; i2++) {
+					/*
+					 * The second literal's value goes in
+					 * bits 30-24 and bit 15.
+					 */
+					const u32 entry = entry1 +
+						((entries[i2] & 0x007F0000) << 8) +
+						((entries[i2] & 0x00800000) >> 8);
+					unsigned i = codewords[i1] |
+						((unsigned)codewords[i2] << len1);
+
+					do {
+						table[i] = entry;
+						i += stride;
+					} while (i < (1U << pair_table_bits));
+				}
+			}
+		}
+	}
+	d->litlen_has_pairs = true;
+}
+
+/*
+ * Decide whether to make pairs of literals in the litlen decode table that was
+ * just built, and if so, make them.  @nonlit_len_counts[len] must be the number
+ * of non-literal litlen symbols that have codeword length 'len'.
+ */
+static forceinline void
+consider_literal_pairs(struct libdeflate_decompressor *d,
+		       const u16 nonlit_len_counts[])
+{
+	unsigned max_codeword_len = DEFLATE_MAX_LITLEN_CODEWORD_LEN;
+	unsigned pair_table_bits;
+	u16 lit_len_counts[LITLEN_TABLEBITS + 1];
+	u32 num_pairs = 0;
+	u32 num_pair_entries = 0;
+	u32 lits_so_far = 0;	/* num literals with length <= len */
+	u32 entries_so_far = 0;	/* their entries in a '2^len' table */
+	unsigned len;
+
+	/*
+	 * Use enough main table bits for two of the longest codewords, if
+	 * that's fewer than the maximum.
+	 */
+	while (max_codeword_len > 1 && d->len_counts[max_codeword_len] == 0)
+		max_codeword_len--;
+	pair_table_bits = MIN(LITLEN_TABLEBITS, 2 * max_codeword_len);
+
+	for (len = 1; len < pair_table_bits; len++)
+		lit_len_counts[len] = d->len_counts[len] -
+				      nonlit_len_counts[len];
+
+	/* Count the pairs and the main table entries they would use. */
+	for (len = 1; len < pair_table_bits; len++) {
+		/*
+		 * The literals of length 'len', in addition to shorter ones,
+		 * can be the second literal of a pair whose first literal has
+		 * length 'pair_table_bits - len'.
+		 */
+		lits_so_far += lit_len_counts[len];
+		entries_so_far = (entries_so_far << 1) + lit_len_counts[len];
+		num_pairs += lit_len_counts[pair_table_bits - len] *
+			     lits_so_far;
+		num_pair_entries += lit_len_counts[pair_table_bits - len] *
+				    entries_so_far;
+	}
+
+	/* The products below can't overflow, as shown by the parameters. */
+	STATIC_ASSERT((1U << LITLEN_TABLEBITS) *
+		      LITLEN_PAIRING_MIN_ENTRIES_DIVISOR <= UINT32_MAX);
+	STATIC_ASSERT(LITLEN_PAIRING_MAX_INPUT <= (1U << 31));
+	if (num_pair_entries * LITLEN_PAIRING_MIN_ENTRIES_DIVISOR >=
+	    ((u32)1 << pair_table_bits) &&
+	    (u64)MIN(d->in_remaining, LITLEN_PAIRING_MAX_INPUT) *
+			num_pair_entries >=
+	    ((u64)num_pairs * LITLEN_PAIRING_COST) << pair_table_bits)
+		make_literal_pairs(d, pair_table_bits, lit_len_counts);
 }
 
 /* Build the decode table for the literal/length code.  */
@@ -1076,20 +1365,41 @@ static bool
 build_litlen_decode_table(struct libdeflate_decompressor *d,
 			  unsigned num_litlen_syms, unsigned num_offset_syms)
 {
+	u16 nonlit_len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
+	const bool consider_pairs =
+		(d->in_remaining >= LITLEN_PAIRING_MIN_INPUT);
+
 	/* When you change TABLEBITS, you must change ENOUGH, and vice versa! */
 	STATIC_ASSERT(LITLEN_TABLEBITS == 11 && LITLEN_ENOUGH == 2342);
 
 	STATIC_ASSERT(ARRAY_LEN(litlen_decode_results) ==
 		      DEFLATE_NUM_LITLEN_SYMS);
 
-	return build_decode_table(d->u.litlen_decode_table,
-				  d->u.l.lens,
-				  num_litlen_syms,
-				  litlen_decode_results,
-				  LITLEN_TABLEBITS,
-				  DEFLATE_MAX_LITLEN_CODEWORD_LEN,
-				  d->sorted_syms,
-				  &d->litlen_tablebits);
+	d->litlen_has_pairs = false;
+	if (consider_pairs) {
+		/*
+		 * Count the codeword lengths of the non-literal symbols, while
+		 * the lengths are still available.
+		 */
+		unsigned sym;
+
+		memset(nonlit_len_counts, 0, sizeof(nonlit_len_counts));
+		for (sym = DEFLATE_NUM_LITERALS; sym < num_litlen_syms; sym++)
+			nonlit_len_counts[d->u.l.lens[sym]]++;
+	}
+	if (!build_decode_table(d->u.litlen_decode_table,
+				d->u.l.lens,
+				num_litlen_syms,
+				litlen_decode_results,
+				LITLEN_TABLEBITS,
+				DEFLATE_MAX_LITLEN_CODEWORD_LEN,
+				d->sorted_syms,
+				d->len_counts,
+				&d->litlen_tablebits))
+		return false;
+	if (consider_pairs)
+		consider_literal_pairs(d, nonlit_len_counts);
+	return true;
 }
 
 /* Build the decode table for the offset code.  */
@@ -1110,6 +1420,7 @@ build_offset_decode_table(struct libdeflate_decompressor *d,
 				  OFFSET_TABLEBITS,
 				  DEFLATE_MAX_OFFSET_CODEWORD_LEN,
 				  d->sorted_syms,
+				  d->len_counts,
 				  NULL);
 }
 

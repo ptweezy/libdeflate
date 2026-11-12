@@ -101,6 +101,7 @@ if(LIBDEFLATE_BUILD_TESTS)
         test_custom_malloc
         test_incomplete_codes
         test_invalid_streams
+        test_literal_pairs
         test_litrunlen_overflow
         test_overread
         test_size_edge_cases
