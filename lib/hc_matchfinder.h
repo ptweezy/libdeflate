@@ -265,9 +265,64 @@ hc_matchfinder_slide_window(struct hc_matchfinder *mf, bool multi_hop)
 }
 
 /*
- * hc_matchfinder_longest_match() and hc_matchfinder_skip_bytes() are in
- * hc_matchfinder_template.h.
+ * Small inputs; see "Small inputs" in matchfinder_common.h.
+ *
+ * HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH is the longest input that is compressed
+ * as a small input.  Above it, the lookups in the maps cost more than the
+ * smaller initialization saves.
+ *
+ * HC_MATCHFINDER_SLOT_SIZE is the number of entries in a slot of the two maps:
+ * a bucket and the hash value.
  */
+#define HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH	384
+#define HC_MATCHFINDER_SLOT_SIZE		2
+
+/*
+ * Prepare the matchfinder for a small input: two maps of 1 << @order slots.
+ * 'next_tab' is indexed by position and is used as for any input.
+ */
+static forceinline void
+hc_matchfinder_init_small(struct hc_matchfinder *mf, bool multi_hop,
+			  unsigned order)
+{
+	const size_t map_size =
+		(HC_MATCHFINDER_SLOT_SIZE * sizeof(mf_pos_t)) << order;
+
+	/* An entry holds a hash value. */
+	STATIC_ASSERT(HC_MATCHFINDER_HASH3_ORDER <= 8 * sizeof(mf_pos_t));
+	STATIC_ASSERT(HC_MATCHFINDER_HASH4_ORDER <= 8 * sizeof(mf_pos_t));
+	STATIC_ASSERT(((HC_MATCHFINDER_SLOT_SIZE * sizeof(mf_pos_t))
+		       << MATCHFINDER_MIN_SMALL_ORDER) %
+		      MATCHFINDER_SIZE_ALIGNMENT == 0);
+	/* 'hash4_tab' is aligned as matchfinder_init() requires. */
+	STATIC_ASSERT(sizeof(mf->hash3_tab) % MATCHFINDER_MEM_ALIGNMENT == 0);
+	/* See matchfinder_small_order() for the largest maps. */
+	STATIC_ASSERT((2 << MATCHFINDER_SMALL_SLOTS_PER_BYTE_ORDER) *
+		      HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH <=
+		      MIN(sizeof(mf->hash3_tab) / (HC_MATCHFINDER_SLOT_SIZE *
+						   sizeof(mf_pos_t)),
+			  1UL << HC_MATCHFINDER_HASH3_ORDER));
+
+	matchfinder_init(mf->hash3_tab, map_size);
+	matchfinder_init(mf->hash4_tab, map_size);
+
+	/* See hc_matchfinder_init(). */
+	if (multi_hop)
+		mf->next_tab.multi_hop[0] = (hc_link_t)0x0001000100010001 *
+					    (u16)MATCHFINDER_INITVAL;
+}
+
+/*
+ * hc_matchfinder_longest_match() and hc_matchfinder_skip_bytes() are in
+ * hc_matchfinder_template.h, which is compiled twice: for inputs in general,
+ * and with the suffix "_small" for small inputs.
+ */
+#define SUFFIX
+#define SMALL_INPUT	0
+#include "hc_matchfinder_template.h"
+
+#define SUFFIX		_small
+#define SMALL_INPUT	1
 #include "hc_matchfinder_template.h"
 
 #endif /* LIB_HC_MATCHFINDER_H */

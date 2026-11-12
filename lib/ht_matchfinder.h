@@ -74,9 +74,52 @@ ht_matchfinder_slide_window(struct ht_matchfinder *mf)
 }
 
 /*
- * ht_matchfinder_longest_match() and ht_matchfinder_skip_bytes() are in
- * ht_matchfinder_template.h.
+ * Small inputs; see "Small inputs" in matchfinder_common.h.
+ *
+ * HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH is the longest input that is compressed
+ * as a small input.  Above it, the lookups in the map cost more than the
+ * smaller initialization saves.
+ *
+ * HT_MATCHFINDER_SLOT_SIZE is the number of entries in a slot of the map: a
+ * bucket, an unused entry, and the hash value.
  */
+#define HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH	512
+#define HT_MATCHFINDER_SLOT_SIZE		4
+
+/* Prepare the matchfinder for a small input: a map of 1 << @order slots. */
+static forceinline void
+ht_matchfinder_init_small(struct ht_matchfinder *mf, unsigned order)
+{
+	const size_t map_size =
+		(HT_MATCHFINDER_SLOT_SIZE * sizeof(mf_pos_t)) << order;
+
+	STATIC_ASSERT(HT_MATCHFINDER_BUCKET_SIZE < HT_MATCHFINDER_SLOT_SIZE);
+	/* An entry holds a hash value. */
+	STATIC_ASSERT(HT_MATCHFINDER_HASH_ORDER <= 8 * sizeof(mf_pos_t));
+	STATIC_ASSERT(((HT_MATCHFINDER_SLOT_SIZE * sizeof(mf_pos_t))
+		       << MATCHFINDER_MIN_SMALL_ORDER) %
+		      MATCHFINDER_SIZE_ALIGNMENT == 0);
+	/* See matchfinder_small_order() for the largest map. */
+	STATIC_ASSERT((2 << MATCHFINDER_SMALL_SLOTS_PER_BYTE_ORDER) *
+		      HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH <=
+		      MIN(sizeof(*mf) / (HT_MATCHFINDER_SLOT_SIZE *
+					 sizeof(mf_pos_t)),
+			  1UL << HT_MATCHFINDER_HASH_ORDER));
+
+	matchfinder_init((mf_pos_t *)mf, map_size);
+}
+
+/*
+ * ht_matchfinder_longest_match() and ht_matchfinder_skip_bytes() are in
+ * ht_matchfinder_template.h, which is compiled twice: for inputs in general,
+ * and with the suffix "_small" for small inputs.
+ */
+#define SUFFIX
+#define SMALL_INPUT	0
+#include "ht_matchfinder_template.h"
+
+#define SUFFIX		_small
+#define SMALL_INPUT	1
 #include "ht_matchfinder_template.h"
 
 #endif /* LIB_HT_MATCHFINDER_H */
