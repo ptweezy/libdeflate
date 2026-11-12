@@ -26,19 +26,44 @@
  */
 
 /*
- * This file implements ht_matchfinder_longest_match() and
- * ht_matchfinder_skip_bytes().  ht_matchfinder.h includes it.
+ * This file is a template parameterized by SUFFIX and SMALL_INPUT.
+ * ht_matchfinder.h includes it twice with different "arguments", so it
+ * intentionally has no include guard.
+ *
+ * It implements ht_matchfinder_longest_match() and ht_matchfinder_skip_bytes().
+ *
+ * SUFFIX:
+ *	Name suffix to append to all instantiated functions.
+ * SMALL_INPUT:
+ *	If 0, instantiate the functions for inputs in general.
+ *	If 1, instantiate the functions for small inputs, which use a map in
+ *	place of each hash table; see "Small inputs" in matchfinder_common.h.
+ *	They don't slide the window, as a small input is shorter than the
+ *	window, and they don't prefetch.
  */
+
+/*
+ * SMALL_ORDER_PARAM is the additional parameter of the functions for small
+ * inputs: the order of the map.  BUCKET is the bucket of 'hash'.
+ */
+#if SMALL_INPUT
+#  define SMALL_ORDER_PARAM	, const unsigned order
+#  define BUCKET		bucket
+#else
+#  define SMALL_ORDER_PARAM
+#  define BUCKET		mf->hash_tab[hash]
+#endif
 
 /* Note: max_len must be >= HT_MATCHFINDER_REQUIRED_NBYTES */
 static forceinline u32
-ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
-			     const u8 ** const in_base_p,
-			     const u8 * const in_next,
-			     const u32 max_len,
-			     const u32 nice_len,
-			     u32 * const next_hash,
-			     u32 * const offset_ret)
+ADD_SUFFIX(ht_matchfinder_longest_match)(struct ht_matchfinder * const mf,
+					 const u8 ** const in_base_p,
+					 const u8 * const in_next,
+					 const u32 max_len,
+					 const u32 nice_len,
+					 u32 * const next_hash,
+					 u32 * const offset_ret
+					 SMALL_ORDER_PARAM)
 {
 	u32 best_len = 0;
 	const u8 *best_matchptr = in_next;
@@ -48,6 +73,9 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	u32 hash;
 	u32 seq;
 	mf_pos_t cur_node;
+#if SMALL_INPUT
+	mf_pos_t *bucket;
+#endif
 	const u8 *matchptr;
 #if HT_MATCHFINDER_BUCKET_SIZE > 1
 	mf_pos_t to_insert;
@@ -60,11 +88,13 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	/* This is assumed throughout this function. */
 	STATIC_ASSERT(HT_MATCHFINDER_MIN_MATCH_LEN == 4);
 
+#if !SMALL_INPUT
 	if (cur_pos == MATCHFINDER_WINDOW_SIZE) {
 		ht_matchfinder_slide_window(mf);
 		*in_base_p += MATCHFINDER_WINDOW_SIZE;
 		cur_pos = 0;
 	}
+#endif
 	in_base = *in_base_p;
 	cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
 
@@ -73,11 +103,19 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	*next_hash = lz_hash(get_unaligned_le32(in_next + 1),
 			     HT_MATCHFINDER_HASH_ORDER);
 	seq = load_u32_unaligned(in_next);
+#if SMALL_INPUT
+	bucket = matchfinder_small_bucket((mf_pos_t *)mf,
+					  HT_MATCHFINDER_SLOT_SIZE,
+					  hash,
+					  HT_MATCHFINDER_HASH_ORDER,
+					  order);
+#else
 	prefetchw(&mf->hash_tab[*next_hash]);
+#endif
 #if HT_MATCHFINDER_BUCKET_SIZE == 1
 	/* Hand-unrolled version for BUCKET_SIZE == 1 */
-	cur_node = mf->hash_tab[hash][0];
-	mf->hash_tab[hash][0] = cur_pos;
+	cur_node = BUCKET[0];
+	BUCKET[0] = cur_pos;
 	if (cur_node <= cutoff)
 		goto out;
 	matchptr = &in_base[cur_node];
@@ -91,15 +129,15 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	 * differs slightly in that it copies the first entry to the second even
 	 * if nice_len is reached on the first, as this can be slightly faster.
 	 */
-	cur_node = mf->hash_tab[hash][0];
-	mf->hash_tab[hash][0] = cur_pos;
+	cur_node = BUCKET[0];
+	BUCKET[0] = cur_pos;
 	if (cur_node <= cutoff)
 		goto out;
 	matchptr = &in_base[cur_node];
 
 	to_insert = cur_node;
-	cur_node = mf->hash_tab[hash][1];
-	mf->hash_tab[hash][1] = to_insert;
+	cur_node = BUCKET[1];
+	BUCKET[1] = to_insert;
 
 	if (load_u32_unaligned(matchptr) == seq) {
 		best_len = lz_extend(in_next, matchptr, 4, max_len);
@@ -129,8 +167,8 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	/* Generic version for HT_MATCHFINDER_BUCKET_SIZE > 2 */
 	to_insert = cur_pos;
 	for (i = 0; i < HT_MATCHFINDER_BUCKET_SIZE; i++) {
-		cur_node = mf->hash_tab[hash][i];
-		mf->hash_tab[hash][i] = to_insert;
+		cur_node = BUCKET[i];
+		BUCKET[i] = to_insert;
 		if (cur_node <= cutoff)
 			goto out;
 		matchptr = &in_base[cur_node];
@@ -152,38 +190,59 @@ out:
 }
 
 static forceinline void
-ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
-			  const u8 ** const in_base_p,
-			  const u8 *in_next,
-			  const u8 * const in_end,
-			  const u32 count,
-			  u32 * const next_hash)
+ADD_SUFFIX(ht_matchfinder_skip_bytes)(struct ht_matchfinder * const mf,
+				      const u8 ** const in_base_p,
+				      const u8 *in_next,
+				      const u8 * const in_end,
+				      const u32 count,
+				      u32 * const next_hash
+				      SMALL_ORDER_PARAM)
 {
 	s32 cur_pos = in_next - *in_base_p;
 	u32 hash;
 	u32 remaining = count;
+#if SMALL_INPUT
+	mf_pos_t *bucket;
+#endif
 	int i;
 
 	if (unlikely(count + HT_MATCHFINDER_REQUIRED_NBYTES > in_end - in_next))
 		return;
 
+#if !SMALL_INPUT
 	if (cur_pos + count - 1 >= MATCHFINDER_WINDOW_SIZE) {
 		ht_matchfinder_slide_window(mf);
 		*in_base_p += MATCHFINDER_WINDOW_SIZE;
 		cur_pos -= MATCHFINDER_WINDOW_SIZE;
 	}
+#endif
 
 	hash = *next_hash;
 	do {
+#if SMALL_INPUT
+		bucket = matchfinder_small_bucket((mf_pos_t *)mf,
+						  HT_MATCHFINDER_SLOT_SIZE,
+						  hash,
+						  HT_MATCHFINDER_HASH_ORDER,
+						  order);
+#endif
 		for (i = HT_MATCHFINDER_BUCKET_SIZE - 1; i > 0; i--)
-			mf->hash_tab[hash][i] = mf->hash_tab[hash][i - 1];
-		mf->hash_tab[hash][0] = cur_pos;
+			BUCKET[i] = BUCKET[i - 1];
+		BUCKET[0] = cur_pos;
 
 		hash = lz_hash(get_unaligned_le32(++in_next),
 			       HT_MATCHFINDER_HASH_ORDER);
 		cur_pos++;
 	} while (--remaining);
 
+#if !SMALL_INPUT
 	prefetchw(&mf->hash_tab[hash]);
+#endif
 	*next_hash = hash;
 }
+
+#undef SMALL_ORDER_PARAM
+#undef BUCKET
+
+#undef SUFFIX
+#undef SMALL_INPUT
