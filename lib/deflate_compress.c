@@ -498,13 +498,31 @@ struct block_split_stats {
 };
 
 struct deflate_output_bitstream;
+struct libdeflate_compressor;
+
+/* A compress() implementation */
+struct deflate_impl {
+
+	/* The function for inputs in general */
+	void (*compress)(struct libdeflate_compressor *restrict c, const u8 *in,
+			 size_t in_nbytes, struct deflate_output_bitstream *os);
+
+	/*
+	 * The function for inputs of at most 'max_small_nbytes' bytes, or
+	 * NULL if 'max_small_nbytes' is 0; see "Small inputs" in
+	 * matchfinder_common.h
+	 */
+	void (*compress_small)(struct libdeflate_compressor *restrict c,
+			       const u8 *in, size_t in_nbytes,
+			       struct deflate_output_bitstream *os);
+	size_t max_small_nbytes;
+};
 
 /* The main DEFLATE compressor structure */
 struct libdeflate_compressor {
 
-	/* Pointer to the compress() implementation chosen at allocation time */
-	void (*impl)(struct libdeflate_compressor *restrict c, const u8 *in,
-		     size_t in_nbytes, struct deflate_output_bitstream *os);
+	/* The compress() implementation chosen at allocation time */
+	const struct deflate_impl *impl;
 
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
@@ -2528,25 +2546,37 @@ deflate_compress_none(const u8 *in, size_t in_nbytes,
 #define GREEDY_MULTI_HOP	false
 #define LAZY_MULTI_HOP		true
 
-/* The compressors of levels 1 to 9 are in compress_template.h. */
+/*
+ * The compressors of levels 1 to 9 are in compress_template.h, which is
+ * compiled twice: for inputs in general, and with the suffix "_small" for
+ * small inputs; see "Small inputs" in matchfinder_common.h.
+ */
 #define SUFFIX
 #define SMALL_INPUT	0
 #include "compress_template.h"
 
-#define SUFFIX		_small
-#define SMALL_INPUT	1
-#include "compress_template.h"
+static const struct deflate_impl deflate_impl_fastest = {
+	.compress = deflate_compress_fastest,
+	.compress_small = NULL,
+	.max_small_nbytes = 0,
+};
 
-/* Bisection only: keep the small compressors in the object. */
-typedef void (*r20_compress_func)(struct libdeflate_compressor *restrict c,
-				  const u8 *in, size_t in_nbytes,
-				  struct deflate_output_bitstream *os);
-extern const r20_compress_func libdeflate_r20_keep[4];
-const r20_compress_func libdeflate_r20_keep[4] = {
-	deflate_compress_fastest_small,
-	deflate_compress_greedy_small,
-	deflate_compress_lazy_small,
-	deflate_compress_lazy2_small,
+static const struct deflate_impl deflate_impl_greedy = {
+	.compress = deflate_compress_greedy,
+	.compress_small = NULL,
+	.max_small_nbytes = 0,
+};
+
+static const struct deflate_impl deflate_impl_lazy = {
+	.compress = deflate_compress_lazy,
+	.compress_small = NULL,
+	.max_small_nbytes = 0,
+};
+
+static const struct deflate_impl deflate_impl_lazy2 = {
+	.compress = deflate_compress_lazy2,
+	.compress_small = NULL,
+	.max_small_nbytes = 0,
 };
 
 #if SUPPORT_NEAR_OPTIMAL_PARSING
@@ -3650,11 +3680,18 @@ deflate_init_offset_slot_full(struct libdeflate_compressor *c)
 	}
 }
 
+/* There is no version of the near-optimal compressor for small inputs. */
+static const struct deflate_impl deflate_impl_near_optimal = {
+	.compress = deflate_compress_near_optimal,
+	.compress_small = NULL,
+	.max_small_nbytes = 0,
+};
+
 /* Do common initialization for the "near-optimal" compression levels. */
 static void
 deflate_init_near_optimal_compressor(struct libdeflate_compressor *c)
 {
-	c->impl = deflate_compress_near_optimal;
+	c->impl = &deflate_impl_near_optimal;
 	deflate_init_offset_slot_full(c);
 
 	/*
@@ -3733,42 +3770,42 @@ libdeflate_alloc_compressor_ex(int compression_level,
 		c->impl = NULL; /* not used */
 		break;
 	case 1:
-		c->impl = deflate_compress_fastest;
+		c->impl = &deflate_impl_fastest;
 		/* max_search_depth is unused. */
 		c->nice_match_length = 32;
 		break;
 	case 2:
-		c->impl = deflate_compress_greedy;
+		c->impl = &deflate_impl_greedy;
 		c->max_search_depth = 6;
 		c->nice_match_length = 10;
 		break;
 	case 3:
-		c->impl = deflate_compress_greedy;
+		c->impl = &deflate_impl_greedy;
 		c->max_search_depth = 12;
 		c->nice_match_length = 14;
 		break;
 	case 4:
-		c->impl = deflate_compress_greedy;
+		c->impl = &deflate_impl_greedy;
 		c->max_search_depth = 16;
 		c->nice_match_length = 30;
 		break;
 	case 5:
-		c->impl = deflate_compress_lazy;
+		c->impl = &deflate_impl_lazy;
 		c->max_search_depth = 16;
 		c->nice_match_length = 30;
 		break;
 	case 6:
-		c->impl = deflate_compress_lazy;
+		c->impl = &deflate_impl_lazy;
 		c->max_search_depth = 35;
 		c->nice_match_length = 65;
 		break;
 	case 7:
-		c->impl = deflate_compress_lazy;
+		c->impl = &deflate_impl_lazy;
 		c->max_search_depth = 100;
 		c->nice_match_length = 130;
 		break;
 	case 8:
-		c->impl = deflate_compress_lazy2;
+		c->impl = &deflate_impl_lazy2;
 		c->max_search_depth = 300;
 		c->nice_match_length = DEFLATE_MAX_MATCH_LEN;
 		break;
@@ -3776,7 +3813,7 @@ libdeflate_alloc_compressor_ex(int compression_level,
 #if !SUPPORT_NEAR_OPTIMAL_PARSING
 	default:
 #endif
-		c->impl = deflate_compress_lazy2;
+		c->impl = &deflate_impl_lazy2;
 		c->max_search_depth = 600;
 		c->nice_match_length = DEFLATE_MAX_MATCH_LEN;
 		break;
@@ -3867,7 +3904,10 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.overflow = false;
 
 	/* Call the actual compression function. */
-	(*c->impl)(c, in, in_nbytes, &os);
+	if (in_nbytes <= c->impl->max_small_nbytes)
+		(*c->impl->compress_small)(c, in, in_nbytes, &os);
+	else
+		(*c->impl->compress)(c, in, in_nbytes, &os);
 
 	/* Return 0 if the output buffer is too small. */
 	if (os.overflow)
