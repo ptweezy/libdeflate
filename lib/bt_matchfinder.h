@@ -146,9 +146,11 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 				const u32 max_search_depth,
 				u32 * const next_hashes,
 				struct lz_match *lz_matchptr,
-				const bool record_matches)
+				const bool record_matches,
+				const bool small,
+				const s32 small_base)
 {
-	const u8 *in_next = in_base + cur_pos;
+	const u8 *in_next = in_base + cur_pos - small_base;
 	u32 depth_remaining = max_search_depth;
 	const s32 cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
 	u32 next_hashseq;
@@ -183,19 +185,23 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 	cur_node_2 = mf->hash3_tab[hash3][1];
 	mf->hash3_tab[hash3][1] = cur_node;
 #endif
-	if (record_matches && cur_node > cutoff) {
+	if (record_matches && MATCHFINDER_NODE_VALID(cur_node)) {
 		u32 seq3 = load_u24_unaligned(in_next);
-		if (seq3 == load_u24_unaligned(&in_base[cur_node])) {
+		if (seq3 ==
+		    load_u24_unaligned(&in_base[cur_node - small_base])) {
 			lz_matchptr->length = 3;
-			lz_matchptr->offset = in_next - &in_base[cur_node];
+			lz_matchptr->offset =
+				in_next - &in_base[cur_node - small_base];
 			lz_matchptr++;
 		}
 	#if BT_MATCHFINDER_HASH3_WAYS >= 2
-		else if (cur_node_2 > cutoff &&
-			seq3 == load_u24_unaligned(&in_base[cur_node_2]))
+		else if (MATCHFINDER_NODE_VALID(cur_node_2) &&
+			seq3 == load_u24_unaligned(
+					&in_base[cur_node_2 - small_base]))
 		{
 			lz_matchptr->length = 3;
-			lz_matchptr->offset = in_next - &in_base[cur_node_2];
+			lz_matchptr->offset =
+				in_next - &in_base[cur_node_2 - small_base];
 			lz_matchptr++;
 		}
 	#endif
@@ -207,7 +213,18 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 	pending_lt_ptr = bt_left_child(mf, cur_pos);
 	pending_gt_ptr = bt_right_child(mf, cur_pos);
 
-	if (cur_node <= cutoff) {
+	/*
+	 * For a small input, the root must also have the hash of this list.
+	 * The search below re-roots the tree, relinking each node it visits,
+	 * so descending from a leftover root would rearrange the tree of
+	 * another hash.  An earlier position of this input that has this
+	 * hash was inserted into this list, so it isn't a leftover, and all
+	 * the nodes below it were linked during this input.
+	 */
+	if (!MATCHFINDER_NODE_VALID(cur_node) ||
+	    (small &&
+	     lz_hash(get_unaligned_le32(&in_base[cur_node - small_base]),
+		     BT_MATCHFINDER_HASH4_ORDER) != hash4)) {
 		*pending_lt_ptr = MATCHFINDER_INITVAL;
 		*pending_gt_ptr = MATCHFINDER_INITVAL;
 		return lz_matchptr;
@@ -218,7 +235,7 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 	len = 0;
 
 	for (;;) {
-		matchptr = &in_base[cur_node];
+		matchptr = &in_base[cur_node - small_base];
 
 		if (matchptr[len] == in_next[len]) {
 			len = lz_extend(in_next, matchptr, len + 1, max_len);
@@ -253,7 +270,7 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 				len = best_lt_len;
 		}
 
-		if (cur_node <= cutoff || !--depth_remaining) {
+		if (!MATCHFINDER_NODE_VALID(cur_node) || !--depth_remaining) {
 			*pending_lt_ptr = MATCHFINDER_INITVAL;
 			*pending_gt_ptr = MATCHFINDER_INITVAL;
 			return lz_matchptr;
@@ -301,17 +318,20 @@ bt_matchfinder_get_matches(struct bt_matchfinder *mf,
 			   u32 nice_len,
 			   u32 max_search_depth,
 			   u32 next_hashes[2],
-			   struct lz_match *lz_matchptr)
+			   struct lz_match *lz_matchptr,
+			   bool small,
+			   s32 small_base)
 {
 	return bt_matchfinder_advance_one_byte(mf,
 					       in_base,
-					       cur_pos,
+					       cur_pos + small_base,
 					       max_len,
 					       nice_len,
 					       max_search_depth,
 					       next_hashes,
 					       lz_matchptr,
-					       true);
+					       true,
+					       small, small_base);
 }
 
 /*
@@ -326,17 +346,20 @@ bt_matchfinder_skip_byte(struct bt_matchfinder *mf,
 			 ptrdiff_t cur_pos,
 			 u32 nice_len,
 			 u32 max_search_depth,
-			 u32 next_hashes[2])
+			 u32 next_hashes[2],
+			 bool small,
+			 s32 small_base)
 {
 	bt_matchfinder_advance_one_byte(mf,
 					in_base,
-					cur_pos,
+					cur_pos + small_base,
 					nice_len,
 					nice_len,
 					max_search_depth,
 					next_hashes,
 					NULL,
-					false);
+					false,
+					small, small_base);
 }
 
 #endif /* LIB_BT_MATCHFINDER_H */

@@ -81,11 +81,13 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 			     const u32 max_len,
 			     const u32 nice_len,
 			     u32 * const next_hash,
-			     u32 * const offset_ret)
+			     u32 * const offset_ret,
+			     const bool small,
+			     const s32 small_base)
 {
 	u32 best_len = 0;
 	const u8 *best_matchptr = in_next;
-	u32 cur_pos = in_next - *in_base_p;
+	u32 cur_pos = in_next - *in_base_p + small_base;
 	const u8 *in_base;
 	mf_pos_t cutoff;
 	u32 hash;
@@ -121,9 +123,9 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	/* Hand-unrolled version for BUCKET_SIZE == 1 */
 	cur_node = mf->hash_tab[hash][0];
 	mf->hash_tab[hash][0] = cur_pos;
-	if (cur_node <= cutoff)
+	if (!MATCHFINDER_NODE_VALID(cur_node))
 		goto out;
-	matchptr = &in_base[cur_node];
+	matchptr = &in_base[cur_node - small_base];
 	if (load_u32_unaligned(matchptr) == seq) {
 		best_len = lz_extend(in_next, matchptr, 4, max_len);
 		best_matchptr = matchptr;
@@ -136,9 +138,9 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	 */
 	cur_node = mf->hash_tab[hash][0];
 	mf->hash_tab[hash][0] = cur_pos;
-	if (cur_node <= cutoff)
+	if (!MATCHFINDER_NODE_VALID(cur_node))
 		goto out;
-	matchptr = &in_base[cur_node];
+	matchptr = &in_base[cur_node - small_base];
 
 	to_insert = cur_node;
 	cur_node = mf->hash_tab[hash][1];
@@ -147,9 +149,9 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	if (load_u32_unaligned(matchptr) == seq) {
 		best_len = lz_extend(in_next, matchptr, 4, max_len);
 		best_matchptr = matchptr;
-		if (cur_node <= cutoff || best_len >= nice_len)
+		if (!MATCHFINDER_NODE_VALID(cur_node) || best_len >= nice_len)
 			goto out;
-		matchptr = &in_base[cur_node];
+		matchptr = &in_base[cur_node - small_base];
 		if (load_u32_unaligned(matchptr) == seq &&
 		    load_u32_unaligned(matchptr + best_len - 3) ==
 		    load_u32_unaligned(in_next + best_len - 3)) {
@@ -160,9 +162,9 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 			}
 		}
 	} else {
-		if (cur_node <= cutoff)
+		if (!MATCHFINDER_NODE_VALID(cur_node))
 			goto out;
-		matchptr = &in_base[cur_node];
+		matchptr = &in_base[cur_node - small_base];
 		if (load_u32_unaligned(matchptr) == seq) {
 			best_len = lz_extend(in_next, matchptr, 4, max_len);
 			best_matchptr = matchptr;
@@ -174,9 +176,9 @@ ht_matchfinder_longest_match(struct ht_matchfinder * const mf,
 	for (i = 0; i < HT_MATCHFINDER_BUCKET_SIZE; i++) {
 		cur_node = mf->hash_tab[hash][i];
 		mf->hash_tab[hash][i] = to_insert;
-		if (cur_node <= cutoff)
+		if (!MATCHFINDER_NODE_VALID(cur_node))
 			goto out;
-		matchptr = &in_base[cur_node];
+		matchptr = &in_base[cur_node - small_base];
 		if (load_u32_unaligned(matchptr) == seq) {
 			len = lz_extend(in_next, matchptr, 4, max_len);
 			if (len > best_len) {
@@ -200,9 +202,10 @@ ht_matchfinder_skip_bytes(struct ht_matchfinder * const mf,
 			  const u8 *in_next,
 			  const u8 * const in_end,
 			  const u32 count,
-			  u32 * const next_hash)
+			  u32 * const next_hash,
+			  const s32 small_base)
 {
-	s32 cur_pos = in_next - *in_base_p;
+	s32 cur_pos = in_next - *in_base_p + small_base;
 	u32 hash;
 	u32 remaining = count;
 	int i;

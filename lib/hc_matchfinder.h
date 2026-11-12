@@ -307,7 +307,9 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 			     const u32 max_search_depth,
 			     u32 * const next_hashes,
 			     u32 * const offset_ret,
-			     const bool multi_hop)
+			     const bool multi_hop,
+			     const bool small,
+			     const s32 small_base)
 {
 	u32 depth_remaining = max_search_depth;
 	const u8 *best_matchptr = in_next;
@@ -320,7 +322,7 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 	u32 seq4;
 	const u8 *matchptr;
 	u32 len;
-	u32 cur_pos = in_next - *in_base_p;
+	u32 cur_pos = in_next - *in_base_p + small_base;
 	const u8 *in_base;
 	mf_pos_t cutoff;
 
@@ -402,13 +404,13 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 
 		/* Check for a length 3 match if needed.  */
 
-		if (cur_node3 <= cutoff)
+		if (!MATCHFINDER_NODE_VALID(cur_node3))
 			goto out;
 
 		seq4 = load_u32_unaligned(in_next);
 
 		if (best_len < 3) {
-			matchptr = &in_base[cur_node3];
+			matchptr = &in_base[cur_node3 - small_base];
 			if (load_u24_unaligned(matchptr) == loaded_u32_to_u24(seq4)) {
 				best_len = 3;
 				best_matchptr = matchptr;
@@ -417,20 +419,21 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 
 		/* Check for a length 4 match.  */
 
-		if (cur_node4 <= cutoff)
+		if (!MATCHFINDER_NODE_VALID(cur_node4))
 			goto out;
 
 		HC_BEGIN_WALK();
 		for (;;) {
 			/* No length 4 match found yet.  Check the first 4 bytes.  */
-			matchptr = &in_base[cur_node4];
+			matchptr = &in_base[cur_node4 - small_base];
 
 			if (load_u32_unaligned(matchptr) == seq4)
 				break;
 
 			/* The first 4 bytes did not match.  Keep trying.  */
 			HC_ADVANCE();
-			if (cur_node4 <= cutoff || !--depth_remaining)
+			if (!MATCHFINDER_NODE_VALID(cur_node4) ||
+			    !--depth_remaining)
 				goto out;
 		}
 
@@ -440,10 +443,10 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 		if (best_len >= nice_len)
 			goto out;
 		HC_ADVANCE();
-		if (cur_node4 <= cutoff || !--depth_remaining)
+		if (!MATCHFINDER_NODE_VALID(cur_node4) || !--depth_remaining)
 			goto out;
 	} else {
-		if (cur_node4 <= cutoff || best_len >= nice_len)
+		if (!MATCHFINDER_NODE_VALID(cur_node4) || best_len >= nice_len)
 			goto out;
 		HC_BEGIN_WALK();
 	}
@@ -452,7 +455,7 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 
 	for (;;) {
 		for (;;) {
-			matchptr = &in_base[cur_node4];
+			matchptr = &in_base[cur_node4 - small_base];
 
 			/* Already found a length 4 match.  Try for a longer
 			 * match; start by checking either the last 4 bytes and
@@ -471,7 +474,8 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 
 			/* Continue to the next node in the list.  */
 			HC_ADVANCE();
-			if (cur_node4 <= cutoff || !--depth_remaining)
+			if (!MATCHFINDER_NODE_VALID(cur_node4) ||
+			    !--depth_remaining)
 				goto out;
 		}
 
@@ -491,7 +495,7 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 
 		/* Continue to the next node in the list.  */
 		HC_ADVANCE();
-		if (cur_node4 <= cutoff || !--depth_remaining)
+		if (!MATCHFINDER_NODE_VALID(cur_node4) || !--depth_remaining)
 			goto out;
 	}
 #undef HC_BEGIN_WALK
@@ -530,7 +534,8 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 			  const u8 * const in_end,
 			  const u32 count,
 			  u32 * const next_hashes,
-			  const bool multi_hop)
+			  const bool multi_hop,
+			  const s32 small_base)
 {
 	u32 cur_pos;
 	u32 hash3, hash4;
@@ -540,7 +545,7 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 	if (unlikely(count + 5 > in_end - in_next))
 		return;
 
-	cur_pos = in_next - *in_base_p;
+	cur_pos = in_next - *in_base_p + small_base;
 	hash3 = next_hashes[0];
 	hash4 = next_hashes[1];
 	do {
