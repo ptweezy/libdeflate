@@ -90,6 +90,242 @@ out:
 	return LIBDEFLATE_SUCCESS;
 }
 
+#define BRANCHLESS_FASTLOOP_FUNCNAME_(funcname)	funcname##_branchless_fastloop
+#define BRANCHLESS_FASTLOOP_FUNCNAME__(funcname) BRANCHLESS_FASTLOOP_FUNCNAME_(funcname)
+#define BRANCHLESS_FASTLOOP_FUNCNAME		BRANCHLESS_FASTLOOP_FUNCNAME__(FUNCNAME)
+
+/*
+ * One step of the branchless fastloop: consume one decode table entry, which is
+ * a literal, a match length, or a match offset, and do the work of all three
+ * kinds, arranged so that the work of the kinds that the entry isn't has no
+ * effect:
+ *
+ * - A literal is stored unconditionally; if the entry isn't a literal, the byte
+ *   that gets stored is garbage that is overwritten later.
+ * - 'pending' always gets the entry's value, which matters only for a length.
+ * - The match copy always runs.  If the entry isn't an offset, it copies some
+ *   bytes from further ahead in the output buffer to the output position (past
+ *   the literal, if any), which is harmless since that part of the output gets
+ *   overwritten later.
+ *
+ * Then load the next entry.  It comes from the offset table if this entry is a
+ * length, i.e. neither a literal (bit 31) nor an offset, else from the litlen
+ * table.  That load is the critical path; the CPU starts on it long before the
+ * rest of the step has finished.
+ */
+#ifndef SM_NCOPY
+#  define SM_NCOPY 2
+#endif
+#ifdef SM_AVX2
+#  include <immintrin.h>
+#  define SM_VEC 32
+#  define SM_COPYV(src, dst)	\
+	_mm256_storeu_si256((__m256i *)(dst), \
+			    _mm256_loadu_si256((const __m256i *)(src)))
+#else
+#  define SM_VEC 16
+#  define SM_COPYV(src, dst)	SM_COPY16(src, dst)
+#endif
+#if SM_NCOPY == 1
+#  define SM_COPY_FIRST(src, dst)	SM_COPYV(src, dst)
+#elif SM_NCOPY == 2
+#  define SM_COPY_FIRST(src, dst)					\
+	do {								\
+		SM_COPYV(src, dst);					\
+		SM_COPYV((src) + SM_VEC, (dst) + SM_VEC);		\
+	} while (0)
+#else
+#  define SM_COPY_FIRST(src, dst)					\
+	do {								\
+		SM_COPYV(src, dst);					\
+		SM_COPYV((src) + SM_VEC, (dst) + SM_VEC);		\
+		SM_COPYV((src) + 2 * SM_VEC, (dst) + 2 * SM_VEC);	\
+	} while (0)
+#endif
+
+#define SM_STEP()							\
+do {									\
+	u32 val, x, offs, len;						\
+	size_t lit;							\
+	const u32 *nexttab;						\
+	const u8 *src;							\
+	u8 *dst;							\
+									\
+	saved_bitbuf = bitbuf;						\
+	bitbuf >>= (u8)entry;						\
+	bitsleft -= entry;						\
+	if (unlikely(entry & HUFFDEC_EXCEPTIONAL)) {			\
+		/* Subtable pointer or end-of-block entry */		\
+		if (fmask) {						\
+			entry = d->offset_decode_table[(entry >> 16) +	\
+				EXTRACT_VARBITS(bitbuf, (entry >> 8) & 0x3F)]; \
+		} else {						\
+			if (unlikely(entry & HUFFDEC_END_OF_BLOCK))	\
+				goto block_done;			\
+			entry = littab[(entry >> 16) +			\
+				EXTRACT_VARBITS(bitbuf, (entry >> 8) & 0x3F)]; \
+		}							\
+		saved_bitbuf = bitbuf;					\
+		bitbuf >>= (u8)entry;					\
+		bitsleft -= entry;					\
+		if (unlikely(!fmask && (entry & HUFFDEC_END_OF_BLOCK)))	\
+			goto block_done;				\
+	}								\
+									\
+	/* The value: literal (in the low 8 bits), length, or offset */	\
+	val = entry >> 16;						\
+	val += (u32)(EXTRACT_VARBITS8(saved_bitbuf, entry) >>		\
+		     (u8)(entry >> 8));					\
+	lit = entry >> 31;						\
+									\
+	*out_next = (u8)val;						\
+									\
+	offs = val & fmask;						\
+	len = pending & fmask;						\
+	src = out_next + 128 - ((offs + 128) & fmask);			\
+	dst = out_next + lit;						\
+	out_next += lit + len;						\
+	pending = val;							\
+									\
+	/* 'offs - 1' wraps around if the entry isn't an offset. */	\
+	if (likely((u32)(offs - 1) >= SM_VEC - 1 || len <= offs)) {	\
+		SM_COPY_FIRST(src, dst);				\
+		if (unlikely(len > SM_VEC * SM_NCOPY)) {		\
+			src += SM_VEC * SM_NCOPY;			\
+			dst += SM_VEC * SM_NCOPY;			\
+			do {						\
+				SM_COPYV(src, dst);			\
+				src += SM_VEC;				\
+				dst += SM_VEC;				\
+			} while (dst < out_next);			\
+		}							\
+	} else if (offs == 1) {						\
+		const machine_word_t v =				\
+			(machine_word_t)0x0101010101010101 * src[0];	\
+									\
+		do {							\
+			store_word_unaligned(v, dst);			\
+			dst += WORDBYTES;				\
+			store_word_unaligned(v, dst);			\
+			dst += WORDBYTES;				\
+		} while (dst < out_next);				\
+	} else if (offs >= WORDBYTES) {					\
+		do {							\
+			store_word_unaligned(load_word_unaligned(src), dst); \
+			src += WORDBYTES;				\
+			dst += WORDBYTES;				\
+		} while (dst < out_next);				\
+	} else {							\
+		do {							\
+			store_word_unaligned(load_word_unaligned(src), dst); \
+			src += offs;					\
+			dst += offs;					\
+		} while (dst < out_next);				\
+	}								\
+									\
+	x = entry;							\
+	nexttab = sm_next_table(&x, fmask, offtab_wide, littab);	\
+	fmask = ~(u32)((s32)x >> 31);					\
+	entry = nexttab[bitbuf & BITMASK(LITLEN_TABLEBITS)];		\
+} while (0)
+
+/*
+ * PROTOTYPE: a fastloop that does not branch on the kind of symbol; see
+ * SM_STEP().  Both decode tables are indexed with the same number of bits;
+ * d->offset_wide_table is the main part of the offset decode table replicated
+ * to make that work.
+ *
+ * It must only be used once DEFLATE_MAX_MATCH_OFFSET bytes have been output,
+ * as it doesn't validate match offsets: none can be invalid then.
+ */
+static ATTRIBUTES NOINLINE MAYBE_UNUSED enum libdeflate_result
+BRANCHLESS_FASTLOOP_FUNCNAME(struct libdeflate_decompressor * restrict d,
+			     const u8 * const in_fastloop_end,
+			     const u8 * const out_fastloop_end)
+{
+	const u32 * const littab = d->u.litlen_decode_table;
+	const u32 * const offtab_wide = d->offset_wide_table;
+	const u8 *in_next = d->fastloop_state.in_next;
+	u8 *out_next = d->fastloop_state.out_next;
+	bitbuf_t bitbuf = d->fastloop_state.bitbuf;
+	bitbuf_t saved_bitbuf;
+	u32 bitsleft = d->fastloop_state.bitsleft;
+	u32 entry;
+	u32 fmask = 0;		/* all 1s if 'entry' is an offset, else 0 */
+	u32 pending = 0;	/* the match length, if 'entry' is an offset */
+	size_t n;
+
+	d->fastloop_state.block_done = false;
+	REFILL_BITS_IN_FASTLOOP();
+	entry = littab[bitbuf & BITMASK(LITLEN_TABLEBITS)];
+	for (;;) {
+		/*
+		 * Compute a number of iterations that can't run past the end of
+		 * the input or of the output space, and run that many without
+		 * checking either.  An iteration reads at most 8 bytes and
+		 * writes at most one match and one literal.  Room is left for
+		 * the match that may get finished after the loop.
+		 */
+		n = MIN((size_t)(in_fastloop_end - in_next) / 8,
+			(size_t)(out_fastloop_end - out_next -
+				 DEFLATE_MAX_MATCH_LEN) / 512);
+		if (n == 0)
+			break;
+		do {
+			/*
+			 * Two steps per refill: no two consecutive entries
+			 * consume more than a length and an offset do.
+			 */
+			STATIC_ASSERT(CAN_CONSUME_AND_THEN_PRELOAD(
+					LENGTH_MAXBITS + OFFSET_MAXBITS,
+					LITLEN_TABLEBITS));
+			SM_STEP();
+			SM_STEP();
+			REFILL_BITS_IN_FASTLOOP();
+		} while (--n);
+	}
+
+	if (fmask) {
+		/*
+		 * A match's length was decoded but not its offset.  Finish the
+		 * match, since the other loops start at a litlen symbol.
+		 */
+		u32 offs;
+
+		saved_bitbuf = bitbuf;
+		bitbuf >>= (u8)entry;
+		bitsleft -= entry;
+		if (unlikely(entry & HUFFDEC_EXCEPTIONAL)) {
+			entry = d->offset_decode_table[(entry >> 16) +
+				EXTRACT_VARBITS(bitbuf, (entry >> 8) & 0x3F)];
+			saved_bitbuf = bitbuf;
+			bitbuf >>= (u8)entry;
+			bitsleft -= entry;
+		}
+		offs = entry >> 16;
+		offs += EXTRACT_VARBITS8(saved_bitbuf, entry) >> (u8)(entry >> 8);
+		do {
+			*out_next = *(out_next - offs);
+			out_next++;
+		} while (--pending);
+	}
+	goto out;
+
+block_done:
+	d->fastloop_state.block_done = true;
+out:
+	d->fastloop_state.in_next = in_next;
+	d->fastloop_state.out_next = out_next;
+	d->fastloop_state.bitbuf = bitbuf;
+	d->fastloop_state.bitsleft = bitsleft;
+	return LIBDEFLATE_SUCCESS;
+}
+
+#undef SM_STEP
+#undef SM_COPY_FIRST
+#undef SM_COPYV
+#undef SM_VEC
+
 static ATTRIBUTES MAYBE_UNUSED enum libdeflate_result
 FUNCNAME(struct libdeflate_decompressor * restrict d,
 	 const void * restrict in, size_t in_nbytes,
@@ -401,8 +637,9 @@ have_decode_tables:
 	 */
 	if (in_next >= in_fastloop_end || out_next >= out_fastloop_end)
 		goto generic_loop;
-	if (unlikely(d->litlen_has_pairs))
+	if (unlikely(d->litlen_has_pairs | d->use_branchless_fastloop))
 		goto pairs_fastloop;
+normal_fastloop:
 	REFILL_BITS_IN_FASTLOOP();
 	entry = d->u.litlen_decode_table[bitbuf & litlen_tablemask];
 #define FASTLOOP_LITERAL_PAIRS 0
@@ -541,8 +778,21 @@ pairs_fastloop:
 		d->fastloop_state.out_next = out_next;
 		d->fastloop_state.bitbuf = bitbuf;
 		d->fastloop_state.bitsleft = bitsleft;
-		res = PAIRS_FASTLOOP_FUNCNAME(d, in_fastloop_end, out,
-					      out_fastloop_end);
+		if (d->use_branchless_fastloop) {
+			/*
+			 * The branchless fastloop doesn't validate match
+			 * offsets, and it needs some extra output space.
+			 */
+			if ((size_t)(out_next - (u8 *)out) <
+			    DEFLATE_MAX_MATCH_OFFSET ||
+			    (size_t)(out_fastloop_end - out_next) <=
+			    DEFLATE_MAX_MATCH_LEN)
+				goto normal_fastloop;
+			res = BRANCHLESS_FASTLOOP_FUNCNAME(d, in_fastloop_end,
+							   out_fastloop_end);
+		} else
+			res = PAIRS_FASTLOOP_FUNCNAME(d, in_fastloop_end, out,
+						      out_fastloop_end);
 		if (unlikely(res != LIBDEFLATE_SUCCESS))
 			return res;
 		in_next = d->fastloop_state.in_next;
@@ -559,6 +809,9 @@ pairs_fastloop:
 #undef ATTRIBUTES
 #undef EXTRACT_VARBITS
 #undef EXTRACT_VARBITS8
+#undef BRANCHLESS_FASTLOOP_FUNCNAME_
+#undef BRANCHLESS_FASTLOOP_FUNCNAME__
+#undef BRANCHLESS_FASTLOOP_FUNCNAME
 #undef PAIRS_FASTLOOP_FUNCNAME_
 #undef PAIRS_FASTLOOP_FUNCNAME__
 #undef PAIRS_FASTLOOP_FUNCNAME

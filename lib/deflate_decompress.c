@@ -662,9 +662,61 @@ static const u32 offset_decode_results[] = {
 };
 
 /*
- * The state that the main decompression routine exchanges with the fastloop for
- * litlen decode tables that contain pairs of literals, which is a separate
- * function.  See decompress_template.h.
+ * Helper for the branchless fastloop: given a decode table entry in *x_p and
+ * fmask (all 1s if the entry is an offset, else 0), return the table that the
+ * next entry comes from: @offtab if the entry is a length, i.e. neither a
+ * literal (bit 31) nor an offset, else @littab.  Also set *x_p to
+ * 'entry | fmask', whose bit 31 is clear iff the entry is a length.
+ *
+ * The condition is not predictable, and this is on the critical path of the
+ * loop, so it must take no longer than an OR and a conditional move.
+ * (PROTOTYPE)
+ */
+#if defined(__GNUC__) && defined(__x86_64__)
+static forceinline const u32 *
+sm_next_table(u32 *x_p, u32 fmask, const u32 *offtab, const u32 *littab)
+{
+	u32 x = *x_p;
+
+	__asm__("orl %k[f], %k[x]; cmovns %[a], %[b]"
+		: [x] "+r" (x), [b] "+r" (littab)
+		: [f] "r" (fmask), [a] "rm" (offtab)
+		: "cc");
+	*x_p = x;
+	return littab;
+}
+#else
+static forceinline const u32 *
+sm_next_table(u32 *x_p, u32 fmask, const u32 *offtab, const u32 *littab)
+{
+	const u32 x = *x_p | fmask;
+
+	*x_p = x;
+	return (s32)x >= 0 ? offtab : littab;
+}
+#endif
+
+/*
+ * Copy 16 bytes, loading all of them before storing any.  (PROTOTYPE)
+ */
+#if defined(__SSE2__) || defined(_M_X64)
+#  include <emmintrin.h>
+#  define SM_COPY16(src, dst)	\
+	_mm_storeu_si128((__m128i *)(dst), \
+			 _mm_loadu_si128((const __m128i *)(src)))
+#else
+#  define SM_COPY16(src, dst)						\
+do {									\
+	const machine_word_t w0_ = load_word_unaligned(src);		\
+	const machine_word_t w1_ = load_word_unaligned((src) + WORDBYTES); \
+	store_word_unaligned(w0_, (dst));				\
+	store_word_unaligned(w1_, (dst) + WORDBYTES);			\
+} while (0)
+#endif
+
+/*
+ * The state that the main decompression routine exchanges with the fastloops
+ * that are separate functions.  See decompress_template.h.
  */
 struct fastloop_state {
 	const u8 *in_next;
@@ -713,6 +765,13 @@ struct libdeflate_decompressor {
 	u32 offset_decode_table[OFFSET_ENOUGH];
 
 	/*
+	 * The main part of offset_decode_table, replicated so that it can be
+	 * indexed with litlen_tablebits bits.  Valid only if
+	 * use_branchless_fastloop.
+	 */
+	u32 offset_wide_table[1 << LITLEN_TABLEBITS];
+
+	/*
 	 * Used only during build_decode_table(), and by make_literal_pairs()
 	 * just after the litlen decode table has been built
 	 */
@@ -723,6 +782,9 @@ struct libdeflate_decompressor {
 
 	/* Whether litlen_decode_table contains pairs of literals */
 	bool litlen_has_pairs;
+
+	/* Whether to decode the current block with the branchless fastloop */
+	bool use_branchless_fastloop;
 
 	unsigned litlen_tablebits;
 
@@ -1360,6 +1422,45 @@ consider_literal_pairs(struct libdeflate_decompressor *d,
 		make_literal_pairs(d, pair_table_bits, lit_len_counts);
 }
 
+/* PROTOTYPE knobs: 0 = never, 1 = by literal probability, 2 = always */
+#ifndef BL_MODE
+#  define BL_MODE	1
+#endif
+/* Use the branchless fastloop if P(literal) < BL_THRESH / 32768 */
+#ifndef BL_THRESH
+#  define BL_THRESH	23593
+#endif
+/* 1 = decide on the branchless fastloop before considering pairs */
+#ifndef BL_PREFER
+#  define BL_PREFER	0
+#endif
+
+/*
+ * Decide whether the block should be decoded with the branchless fastloop.
+ * The codeword lengths imply the probability that a symbol is a literal.
+ */
+static forceinline bool
+want_branchless_fastloop(const struct libdeflate_decompressor *d,
+			 const u16 nonlit_len_counts[])
+{
+	u32 total = 0;
+	u32 nonlit = 0;
+	unsigned len;
+
+	if (d->litlen_tablebits != LITLEN_TABLEBITS)
+		return false;
+	if (BL_MODE == 2)
+		return true;
+	for (len = 1; len <= DEFLATE_MAX_LITLEN_CODEWORD_LEN; len++) {
+		total += (u32)d->len_counts[len] <<
+			 (DEFLATE_MAX_LITLEN_CODEWORD_LEN - len);
+		nonlit += (u32)nonlit_len_counts[len] <<
+			  (DEFLATE_MAX_LITLEN_CODEWORD_LEN - len);
+	}
+	/* P(literal) = (total - nonlit) / total */
+	return (u64)(total - nonlit) * 32768 < (u64)BL_THRESH * total;
+}
+
 /* Build the decode table for the literal/length code.  */
 static bool
 build_litlen_decode_table(struct libdeflate_decompressor *d,
@@ -1368,6 +1469,11 @@ build_litlen_decode_table(struct libdeflate_decompressor *d,
 	u16 nonlit_len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
 	const bool consider_pairs =
 		(d->in_remaining >= LITLEN_PAIRING_MIN_INPUT);
+	const bool consider_branchless =
+		BL_MODE != 0 && d->in_remaining != 0 &&
+		CAN_CONSUME_AND_THEN_PRELOAD(LENGTH_MAXBITS + OFFSET_MAXBITS,
+					     LITLEN_TABLEBITS) &&
+		UNALIGNED_ACCESS_IS_FAST;
 
 	/* When you change TABLEBITS, you must change ENOUGH, and vice versa! */
 	STATIC_ASSERT(LITLEN_TABLEBITS == 11 && LITLEN_ENOUGH == 2342);
@@ -1376,7 +1482,8 @@ build_litlen_decode_table(struct libdeflate_decompressor *d,
 		      DEFLATE_NUM_LITLEN_SYMS);
 
 	d->litlen_has_pairs = false;
-	if (consider_pairs) {
+	d->use_branchless_fastloop = false;
+	if (consider_pairs || consider_branchless) {
 		/*
 		 * Count the codeword lengths of the non-literal symbols, while
 		 * the lengths are still available.
@@ -1397,8 +1504,23 @@ build_litlen_decode_table(struct libdeflate_decompressor *d,
 				d->len_counts,
 				&d->litlen_tablebits))
 		return false;
-	if (consider_pairs)
+	if (consider_branchless && BL_PREFER)
+		d->use_branchless_fastloop =
+			want_branchless_fastloop(d, nonlit_len_counts);
+	if (consider_pairs && !d->use_branchless_fastloop)
 		consider_literal_pairs(d, nonlit_len_counts);
+	if (consider_branchless && !BL_PREFER && !d->litlen_has_pairs)
+		d->use_branchless_fastloop =
+			want_branchless_fastloop(d, nonlit_len_counts);
+	if (d->use_branchless_fastloop) {
+		size_t n = (size_t)1 << OFFSET_TABLEBITS;
+
+		memcpy(d->offset_wide_table, d->offset_decode_table,
+		       n * sizeof(d->offset_wide_table[0]));
+		for (; n < ((size_t)1 << d->litlen_tablebits); n <<= 1)
+			memcpy(&d->offset_wide_table[n], d->offset_wide_table,
+			       n * sizeof(d->offset_wide_table[0]));
+	}
 	return true;
 }
 
