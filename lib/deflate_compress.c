@@ -4218,12 +4218,12 @@ libdeflate_alloc_compressor(int compression_level)
  *
  * A small input is a single block: it is shorter than MIN_BLOCK_LENGTH and
  * fits the sequence store.  So the block splitting statistics aren't gathered,
- * and deflate_compress_small() outputs the block.
+ * and tiny_compress() outputs the block.
  */
 
 /* The parser of deflate_compress_fastest() for small inputs */
 static NOINLINE void
-deflate_parse_fastest_small(struct libdeflate_compressor * restrict c,
+tiny_parse_fastest(struct libdeflate_compressor * restrict c,
 			    const u8 *in, size_t in_nbytes)
 {
 	const u8 *in_next = in;
@@ -4297,7 +4297,7 @@ deflate_parse_fastest_small(struct libdeflate_compressor * restrict c,
  * are used for all three; see 'next_tab' in hc_matchfinder.h.
  */
 static NOINLINE void
-deflate_parse_hc_small(struct libdeflate_compressor * restrict c,
+tiny_parse_hc(struct libdeflate_compressor * restrict c,
 		       const u8 *in, size_t in_nbytes,
 		       const unsigned max_lookahead)
 {
@@ -4407,7 +4407,7 @@ output_match:
  * @in_nbytes bytes is small for it.
  */
 static forceinline bool
-deflate_is_small_input(const struct libdeflate_compressor *c, size_t in_nbytes)
+tiny_input(const struct libdeflate_compressor *c, size_t in_nbytes)
 {
 	STATIC_ASSERT(HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH <=
 		      HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH);
@@ -4422,19 +4422,19 @@ deflate_is_small_input(const struct libdeflate_compressor *c, size_t in_nbytes)
 		c->impl == deflate_compress_lazy2);
 }
 
-/* Compress a small input; see deflate_is_small_input(). */
+/* Compress a small input; see tiny_input(). */
 static NOINLINE void
-deflate_compress_small(struct libdeflate_compressor * restrict c,
+tiny_compress(struct libdeflate_compressor * restrict c,
 		       const u8 *in, size_t in_nbytes,
 		       struct deflate_output_bitstream *os)
 {
 	const struct deflate_sequence *sequences;
 
 	if (c->impl == deflate_compress_fastest) {
-		deflate_parse_fastest_small(c, in, in_nbytes);
+		tiny_parse_fastest(c, in, in_nbytes);
 		sequences = c->p.f.sequences;
 	} else {
-		deflate_parse_hc_small(c, in, in_nbytes,
+		tiny_parse_hc(c, in, in_nbytes,
 				       c->impl == deflate_compress_greedy ? 0 :
 				       c->impl == deflate_compress_lazy ? 1 : 2);
 		sequences = c->p.g.sequences;
@@ -4482,8 +4482,8 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.overflow = false;
 
 	/* Call the actual compression function. */
-	if (deflate_is_small_input(c, in_nbytes))
-		deflate_compress_small(c, in, in_nbytes, &os);
+	if (tiny_input(c, in_nbytes))
+		tiny_compress(c, in, in_nbytes, &os);
 	else
 		(*c->impl)(c, in, in_nbytes, &os);
 
