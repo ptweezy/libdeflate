@@ -80,6 +80,46 @@ typedef s16 mf_pos_t;
  */
 #define MATCHFINDER_SIZE_ALIGNMENT	1024
 
+/*
+ * Small inputs
+ *
+ * Initializing a matchfinder takes longer than compressing a small input does.
+ * So an input of at most MATCHFINDER_MAX_SMALL_INPUT_LENGTH bytes is compressed
+ * without initializing the matchfinder, which then contains whatever earlier
+ * inputs left in it.  Each entry that is read from it is checked instead.
+ *
+ * The positions of a small input are numbered from 'small_base' instead of 0,
+ * and an entry is used only if it is one of the input's positions before the
+ * current one.  A leftover entry can pass this test, but it cannot change the
+ * result.  Wherever an entry is used, the bytes at it are compared with the
+ * bytes at the current position.  Equal bytes have equal hashes, and each
+ * earlier position of the input was inserted under its hash, so an entry with
+ * equal bytes isn't a leftover.  (The binary tree matchfinder also relinks the
+ * entries it visits, so it checks more; see bt_matchfinder_template.h.)
+ *
+ * The result doesn't depend on 'small_base'.  Consecutive small inputs just
+ * get consecutive ranges of positions, so that a leftover entry is rarely in
+ * the current range and the test stays predictable.  The ranges are in the
+ * first window, so the window never slides during a small input.
+ *
+ * Each matchfinder's functions that search for matches are in a template
+ * header, which is compiled once for inputs in general and once for small
+ * inputs.  So the code for inputs in general doesn't contain this test.
+ */
+#define MATCHFINDER_MAX_SMALL_INPUT_LENGTH	2048
+
+/*
+ * Whether @node, an entry read from the matchfinder during a small input, is
+ * anything but one of the input's positions before the current one.  This
+ * expects the variables 'small_base' and 'cur_pos' (the current position).
+ *
+ * This checks both ends of the range with a single comparison.  That matters:
+ * a leftover entry is on either side of the range about equally often, so a
+ * comparison with one end alone is unpredictable.
+ */
+#define MATCHFINDER_SMALL_NODE_STALE(node)	\
+	((u32)((node) - small_base) >= (u32)cur_pos - small_base)
+
 #undef matchfinder_init
 #undef matchfinder_rebase
 #ifdef _aligned_attribute
