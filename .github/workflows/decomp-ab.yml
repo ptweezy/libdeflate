@@ -1,0 +1,97 @@
+name: decomp-ab
+# Test-only: interleaved A/B timing of decompression for the commit series
+# below HEAD on hosted runners (scripts/decomp_ab).  Not for upstream.
+on:
+  push:
+    branches: ['decomp-ab*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: decomp-ab-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/decomp_ab/inputs.sh "$RUNNER_TEMP/abin"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        # The x86 and Windows jobs already ran for this series; this rerun
+        # is for the jobs that failed to build, plus a diagnostic on macOS.
+        # - { name: x86-gcc-1,   runner: ubuntu-24.04,     cc: gcc }
+        # - { name: x86-gcc-2,   runner: ubuntu-24.04,     cc: gcc }
+        # - { name: x86-clang-1, runner: ubuntu-24.04,     cc: clang }
+        # - { name: x86-clang-2, runner: ubuntu-24.04,     cc: clang }
+        - { name: arm-gcc,     runner: ubuntu-24.04-arm, cc: gcc }
+        - { name: arm-clang,   runner: ubuntu-24.04-arm, cc: clang }
+        - { name: macos-clang, runner: macos-15,         cc: clang }
+        # - { name: win-msvc,    runner: windows-2025,     cc: msvc }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 8
+    - uses: actions/download-artifact@v8
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+    - name: Time
+      if: runner.os != 'Windows'
+      env:
+        CC: ${{ matrix.cc }}
+      run: bash scripts/decomp_ab/run.sh "$RUNNER_TEMP/abin" "$RUNNER_TEMP/ab"
+    - name: Trees (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        W=$(cygpath -u "$RUNNER_TEMP")/ab
+        for i in 0 1 2; do
+          mkdir -p "$W/t$i"
+          git archive "HEAD~$((3 - i))" | tar -x -C "$W/t$i"
+        done
+    - name: Build (MSVC)
+      if: runner.os == 'Windows'
+      shell: cmd
+      run: scripts\decomp_ab\msvc.bat "%RUNNER_TEMP%\ab" 2
+    - name: Time (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      env:
+        AB_PREBUILT: 1
+        EXE: .exe
+        PY: python
+      run: |
+        T=$(cygpath -u "$RUNNER_TEMP")
+        bash scripts/decomp_ab/run.sh "$T/abin" "$T/ab"
+    - name: Summary
+      if: always()
+      shell: bash
+      run: |
+        T=$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")
+        {
+          echo '```'
+          cat "$T/ab/results.txt" 2>/dev/null || echo "no results"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: ab-${{ matrix.name }}
+        path: ${{ runner.temp }}/ab/results.txt
+        if-no-files-found: warn

@@ -1,0 +1,3 @@
+# Test-only scripts: keep shell and Python files LF on every platform.
+* text eol=lf
+*.bat text eol=crlf
