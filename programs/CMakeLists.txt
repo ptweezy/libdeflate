@@ -105,6 +105,7 @@ if(LIBDEFLATE_BUILD_TESTS)
         test_overread
         test_size_edge_cases
         test_slow_decompression
+        test_small_inputs
         test_trailing_bytes
     )
     foreach(PROG ${UNIT_TEST_PROGS})
