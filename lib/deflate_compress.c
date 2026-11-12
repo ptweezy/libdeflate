@@ -2555,28 +2555,32 @@ deflate_compress_none(const u8 *in, size_t in_nbytes,
 #define SMALL_INPUT	0
 #include "compress_template.h"
 
+#define SUFFIX		_small
+#define SMALL_INPUT	1
+#include "compress_template.h"
+
 static const struct deflate_impl deflate_impl_fastest = {
 	.compress = deflate_compress_fastest,
-	.compress_small = NULL,
-	.max_small_nbytes = 0,
+	.compress_small = deflate_compress_fastest_small,
+	.max_small_nbytes = HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
 };
 
 static const struct deflate_impl deflate_impl_greedy = {
 	.compress = deflate_compress_greedy,
-	.compress_small = NULL,
-	.max_small_nbytes = 0,
+	.compress_small = deflate_compress_greedy_small,
+	.max_small_nbytes = HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
 };
 
 static const struct deflate_impl deflate_impl_lazy = {
 	.compress = deflate_compress_lazy,
-	.compress_small = NULL,
-	.max_small_nbytes = 0,
+	.compress_small = deflate_compress_lazy_small,
+	.max_small_nbytes = HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
 };
 
 static const struct deflate_impl deflate_impl_lazy2 = {
 	.compress = deflate_compress_lazy2,
-	.compress_small = NULL,
-	.max_small_nbytes = 0,
+	.compress_small = deflate_compress_lazy2_small,
+	.max_small_nbytes = HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH,
 };
 
 #if SUPPORT_NEAR_OPTIMAL_PARSING
