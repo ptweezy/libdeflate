@@ -4483,7 +4483,19 @@ tiny_compress(struct libdeflate_compressor * restrict c,
  * compressor's implementation.  This function isn't inline and only makes tail
  * calls, so that an input that isn't small costs one direct call and the test.
  */
-static NOINLINE void
+/* [test only] dead-code control: the code for small inputs is kept, uncalled */
+void
+tiny_or_impl(struct libdeflate_compressor * restrict c,
+	     const u8 *in, size_t in_nbytes,
+	     struct deflate_output_bitstream *os);
+#ifdef _MSC_VER
+#  ifdef _M_IX86
+#    pragma comment(linker, "/INCLUDE:_tiny_or_impl")
+#  else
+#    pragma comment(linker, "/INCLUDE:tiny_or_impl")
+#  endif
+#endif
+NOINLINE void
 tiny_or_impl(struct libdeflate_compressor * restrict c,
 	     const u8 *in, size_t in_nbytes,
 	     struct deflate_output_bitstream *os)
@@ -4534,7 +4546,7 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.overflow = false;
 
 	/* Call the actual compression function. */
-	tiny_or_impl(c, in, in_nbytes, &os);
+	(*c->impl)(c, in, in_nbytes, &os);
 
 	/* Return 0 if the output buffer is too small. */
 	if (os.overflow)
