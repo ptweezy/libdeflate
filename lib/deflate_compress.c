@@ -4439,6 +4439,10 @@ tiny_compress(struct libdeflate_compressor * restrict c,
 {
 	const struct deflate_sequence *sequences;
 
+	if (!deflate_is_small_input(c, in_nbytes)) {
+		(*c->impl)(c, in, in_nbytes, os);
+		return;
+	}
 	if (c->impl == deflate_compress_fastest) {
 		tiny_parse_fastest(c, in, in_nbytes);
 		sequences = c->p.f.sequences;
@@ -4506,10 +4510,7 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.overflow = false;
 
 	/* Call the actual compression function. */
-	if (deflate_is_small_input(c, in_nbytes))
-		tiny_compress(c, in, in_nbytes, &os);
-	else
-		(*c->impl)(c, in, in_nbytes, &os);
+	tiny_compress(c, in, in_nbytes, &os);
 
 	/* Return 0 if the output buffer is too small. */
 	if (os.overflow)
