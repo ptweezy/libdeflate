@@ -4208,8 +4208,8 @@ libdeflate_alloc_compressor(int compression_level)
 /*
  * Small inputs
  *
- * The two functions below choose the literals and matches for an input of at
- * most HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH or
+ * The first two functions below choose the literals and matches for an input
+ * of at most HT_MATCHFINDER_MAX_SMALL_INPUT_LENGTH or
  * HC_MATCHFINDER_MAX_SMALL_INPUT_LENGTH bytes, as the level 1 to 9 compressors
  * do for inputs in general.  They use the matchfinder functions for small
  * inputs, which initialize and search a small map in place of each hash table;
@@ -4218,13 +4218,19 @@ libdeflate_alloc_compressor(int compression_level)
  *
  * A small input is a single block: it is shorter than MIN_BLOCK_LENGTH and
  * fits the sequence store.  So the block splitting statistics aren't gathered,
- * and deflate_compress_small() outputs the block.
+ * and tiny_compress() outputs the block.
+ *
+ * This code is arranged so that it doesn't change or move the code for inputs
+ * in general.  libdeflate_deflate_compress() makes a single call, to
+ * tiny_or_impl().  The functions below that aren't inline have names that
+ * sort after the names of this file's other functions, as MSVC places the
+ * functions of a file in the order of their names.
  */
 
 /* The parser of deflate_compress_fastest() for small inputs */
 static NOINLINE void
-deflate_parse_fastest_small(struct libdeflate_compressor * restrict c,
-			    const u8 *in, size_t in_nbytes)
+tiny_parse_fastest(struct libdeflate_compressor * restrict c,
+		   const u8 *in, size_t in_nbytes)
 {
 	const u8 *in_next = in;
 	const u8 * const in_end = in_next + in_nbytes;
@@ -4305,9 +4311,9 @@ deflate_parse_fastest_small(struct libdeflate_compressor * restrict c,
  * current match and the position being searched.
  */
 static NOINLINE void
-deflate_parse_hc_small(struct libdeflate_compressor * restrict c,
-		       const u8 *in, size_t in_nbytes,
-		       const unsigned max_lookahead)
+tiny_parse_hc(struct libdeflate_compressor * restrict c,
+	      const u8 *in, size_t in_nbytes,
+	      const unsigned max_lookahead)
 {
 	const u8 *in_next = in;
 	const u8 * const in_end = in_next + in_nbytes;
@@ -4433,14 +4439,14 @@ deflate_is_small_input(const struct libdeflate_compressor *c, size_t in_nbytes)
 
 /* Compress a small input; see deflate_is_small_input(). */
 static NOINLINE void
-deflate_compress_small(struct libdeflate_compressor * restrict c,
-		       const u8 *in, size_t in_nbytes,
-		       struct deflate_output_bitstream *os)
+tiny_compress(struct libdeflate_compressor * restrict c,
+	      const u8 *in, size_t in_nbytes,
+	      struct deflate_output_bitstream *os)
 {
 	const struct deflate_sequence *sequences;
 
 	if (c->impl == deflate_compress_fastest) {
-		deflate_parse_fastest_small(c, in, in_nbytes);
+		tiny_parse_fastest(c, in, in_nbytes);
 		sequences = c->p.f.sequences;
 	} else {
 		unsigned max_lookahead = 2;
@@ -4449,11 +4455,76 @@ deflate_compress_small(struct libdeflate_compressor * restrict c,
 			max_lookahead = 0;
 		else if (c->impl == deflate_compress_lazy)
 			max_lookahead = 1;
-		deflate_parse_hc_small(c, in, in_nbytes, max_lookahead);
+		tiny_parse_hc(c, in, in_nbytes, max_lookahead);
 		sequences = c->p.g.sequences;
 	}
-	deflate_finish_block(c, os, in, in_nbytes, sequences, true);
+
+	/*
+	 * Output the block.  This is deflate_finish_block() written out:
+	 * another call of that function would change where some compilers
+	 * inline it.
+	 */
+	c->freqs.litlen[DEFLATE_END_OF_BLOCK]++;
+	deflate_make_huffman_code(DEFLATE_NUM_LITLEN_SYMS,
+				  MAX_LITLEN_CODEWORD_LEN,
+				  c->freqs.litlen,
+				  c->codes.lens.litlen,
+				  c->codes.codewords.litlen);
+	deflate_make_huffman_code(DEFLATE_NUM_OFFSET_SYMS,
+				  MAX_OFFSET_CODEWORD_LEN,
+				  c->freqs.offset,
+				  c->codes.lens.offset,
+				  c->codes.codewords.offset);
+	deflate_flush_block(c, os, in, in_nbytes, sequences, true);
 }
+
+/*
+ * Compress a small input with tiny_compress(), and any other input with the
+ * compressor's implementation.  This function isn't inline and only makes tail
+ * calls, so that an input that isn't small costs one direct call and the test.
+ */
+/* [test only] dead-code control: the code for small inputs is kept, uncalled */
+void
+tiny_or_impl(struct libdeflate_compressor * restrict c,
+	     const u8 *in, size_t in_nbytes,
+	     struct deflate_output_bitstream *os);
+#ifdef _MSC_VER
+#  ifdef _M_IX86
+#    pragma comment(linker, "/INCLUDE:_tiny_or_impl")
+#  else
+#    pragma comment(linker, "/INCLUDE:tiny_or_impl")
+#  endif
+#endif
+NOINLINE void
+tiny_or_impl(struct libdeflate_compressor * restrict c,
+	     const u8 *in, size_t in_nbytes,
+	     struct deflate_output_bitstream *os)
+{
+	if (deflate_is_small_input(c, in_nbytes))
+		tiny_compress(c, in, in_nbytes, os);
+	else
+		(*c->impl)(c, in, in_nbytes, os);
+}
+
+/* [test only] padding control: an unused function of 16 bytes */
+#ifdef _MSC_VER
+#include <intrin.h>
+#  ifdef _M_IX86
+#    pragma comment(linker, "/INCLUDE:_tiny_zpad")
+#  else
+#    pragma comment(linker, "/INCLUDE:tiny_zpad")
+#  endif
+#define P1 __nop();
+#define P4 P1 P1 P1 P1
+#define P16 P4 P4 P4 P4
+#define P64 P16 P16 P16 P16
+#define P256 P64 P64 P64 P64
+void tiny_zpad(void);
+void tiny_zpad(void)
+{
+	P4 P4 P4 P1 P1 P1
+}
+#endif
 
 LIBDEFLATEAPI size_t
 libdeflate_deflate_compress(struct libdeflate_compressor *c,
@@ -4495,10 +4566,7 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.overflow = false;
 
 	/* Call the actual compression function. */
-	if (deflate_is_small_input(c, in_nbytes))
-		deflate_compress_small(c, in, in_nbytes, &os);
-	else
-		(*c->impl)(c, in, in_nbytes, &os);
+	(*c->impl)(c, in, in_nbytes, &os);
 
 	/* Return 0 if the output buffer is too small. */
 	if (os.overflow)
