@@ -4506,7 +4506,7 @@ tiny_or_impl(struct libdeflate_compressor * restrict c,
 		(*c->impl)(c, in, in_nbytes, os);
 }
 
-/* [test only] padding control: an unused function of 64 bytes */
+/* [test only] padding control: an unused function of 320 bytes */
 #ifdef _MSC_VER
 #include <intrin.h>
 #  ifdef _M_IX86
@@ -4522,7 +4522,7 @@ tiny_or_impl(struct libdeflate_compressor * restrict c,
 void tiny_zpad(void);
 void tiny_zpad(void)
 {
-	P16 P16 P16 P4 P4 P4 P1 P1 P1
+	P256 P16 P16 P16 P4 P4 P4 P1 P1 P1
 }
 #endif
 
