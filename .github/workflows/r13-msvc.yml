@@ -13,10 +13,10 @@ env:
   # name ref pairs.  The library is built with CMake (Release), as a user
   # builds it, and msbench is linked against the static library.  The first
   # name is upstream master; the others are compared with it.
-  REFS: nb 7e66210 nb2 7e66210 c1 4fd9337 dc 0ab0e5b m6 e3445be m7 b9360aa a 6b5e5cc
-  NAMES: nb,nb2,c1,dc,m6,m7,a
-  EXPECT: nb:x,nb2:x,c1:x,dc:x,m6:x,m7:x,a:x
-  PAIRS: nb:nb2,nb:c1,nb:dc,nb:m6,nb:m7,nb:a,dc:c1
+  REFS: nb 7e66210 nb2 7e66210 dc 0ab0e5b dp16 805653a dp32 6d91722 dp64 7ded69c dp320 ace3003 c1 4fd9337
+  NAMES: nb,nb2,dc,dp16,dp32,dp64,dp320,c1
+  EXPECT: nb:x,nb2:x,dc:x,dp16:x,dp32:x,dp64:x,dp320:x,c1:x
+  PAIRS: nb:nb2,nb:dc,nb:dp16,nb:dp32,nb:dp64,nb:dp320,nb:c1
 jobs:
   prep:
     runs-on: ubuntu-24.04
