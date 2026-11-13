@@ -221,4 +221,91 @@ word_differs:
 	return len;
 }
 
+/*
+ * Small inputs
+ *
+ * Initializing the hash tables of a matchfinder takes longer than compressing
+ * a small input does, and a small input uses only a few of their buckets.  So
+ * for a small input, the start of each hash table is used as an open-addressed
+ * map from the hash value to the bucket, and only that part is initialized.
+ *
+ * A map has '1 << order' slots.  A slot is a bucket and, in its last entry,
+ * the hash value that the bucket belongs to.  A slot is free while the first
+ * entry of its bucket is MATCHFINDER_INITVAL; the matchfinders store a position
+ * there right after each lookup.  The bucket of a hash value in the map holds
+ * exactly what its bucket in the full table would hold, so the matchfinders
+ * find the same matches and the compressed data is the same.
+ *
+ * The search functions of the matchfinders are compiled twice from template
+ * headers: for inputs in general, and for small inputs.
+ */
+
+/*
+ * A map has at least '1 << MATCHFINDER_SMALL_SLOTS_PER_BYTE_ORDER' slots per
+ * input byte.  More slots make the lookups faster and the initialization
+ * slower.
+ */
+#define MATCHFINDER_SMALL_SLOTS_PER_BYTE_ORDER	3
+
+/*
+ * The smallest map order.  With it, the size of a map is a multiple of
+ * MATCHFINDER_SIZE_ALIGNMENT, as matchfinder_init() requires.
+ */
+#define MATCHFINDER_MIN_SMALL_ORDER		8
+
+/*
+ * Return the order of the maps for a small input of @in_nbytes bytes
+ * (@in_nbytes > 0).  Unless the minimum applies, a map has at least
+ * '1 << MATCHFINDER_SMALL_SLOTS_PER_BYTE_ORDER' and fewer than
+ * '2 << MATCHFINDER_SMALL_SLOTS_PER_BYTE_ORDER' slots per input byte.
+ */
+static forceinline unsigned
+matchfinder_small_order(size_t in_nbytes)
+{
+	/* ceil(log2(in_nbytes)) */
+	unsigned order = bsr32(2 * in_nbytes - 1);
+
+	order += MATCHFINDER_SMALL_SLOTS_PER_BYTE_ORDER;
+	return MAX(order, MATCHFINDER_MIN_SMALL_ORDER);
+}
+
+/*
+ * Return the bucket of @hash, a hash value of @hash_order bits, in the map
+ * @slots, whose slots are @slot_size entries each: the slot that has this hash
+ * value, or else the first free slot at or after the hash value's home slot,
+ * which then belongs to this hash value.
+ *
+ * The search ends because the map always has a free slot: a matchfinder does
+ * at most one lookup per input byte in each map, a lookup takes at most one
+ * free slot, and a map has more slots than the input has bytes.
+ */
+static forceinline mf_pos_t *
+matchfinder_small_bucket(mf_pos_t *slots, unsigned slot_size, u32 hash,
+			 unsigned hash_order, unsigned order)
+{
+	const u32 mask = ((u32)1 << order) - 1;
+	u32 i = hash >> (hash_order - order);
+
+	for (;;) {
+		mf_pos_t *slot = &slots[slot_size * i];
+		/* 0 if the slot belongs to this hash value */
+		const u32 other = (u16)(slot[slot_size - 1] ^ hash);
+		/* 0 if the slot is free */
+		const u32 used = (u16)(slot[0] ^ MATCHFINDER_INITVAL);
+
+		/*
+		 * Take the slot if it belongs to this hash value or is free.
+		 * Which of the two it is depends on the data, so test both
+		 * with one branch.  The test is written this way because gcc
+		 * compiles 'other == 0 || used == 0', and the same with '|',
+		 * to two branches.
+		 */
+		if (likely((s32)((other - 1) | (used - 1)) < 0)) {
+			slot[slot_size - 1] = hash;
+			return slot;
+		}
+		i = (i + 1) & mask;
+	}
+}
+
 #endif /* LIB_MATCHFINDER_COMMON_H */

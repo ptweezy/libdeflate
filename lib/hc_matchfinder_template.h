@@ -26,9 +26,36 @@
  */
 
 /*
- * This file implements hc_matchfinder_longest_match() and
- * hc_matchfinder_skip_bytes().  hc_matchfinder.h includes it.
+ * This file is a template parameterized by SUFFIX and SMALL_INPUT.
+ * hc_matchfinder.h includes it twice with different "arguments", so it
+ * intentionally has no include guard.
+ *
+ * It implements hc_matchfinder_longest_match() and hc_matchfinder_skip_bytes().
+ *
+ * SUFFIX:
+ *	Name suffix to append to all instantiated functions.
+ * SMALL_INPUT:
+ *	If 0, instantiate the functions for inputs in general.
+ *	If 1, instantiate the functions for small inputs, which use a map in
+ *	place of each hash table; see "Small inputs" in matchfinder_common.h.
+ *	They don't slide the window, as a small input is shorter than the
+ *	window, and they don't prefetch.
  */
+
+/*
+ * SMALL_ORDER_PARAM is the additional parameter of the functions for small
+ * inputs: the order of the maps.  BUCKET3 and BUCKET4 are the buckets of
+ * 'hash3' and 'hash4'.
+ */
+#if SMALL_INPUT
+#  define SMALL_ORDER_PARAM	, const unsigned order
+#  define BUCKET3		(*bucket3)
+#  define BUCKET4		(*bucket4)
+#else
+#  define SMALL_ORDER_PARAM
+#  define BUCKET3		mf->hash3_tab[hash3]
+#  define BUCKET4		mf->hash4_tab[hash4]
+#endif
 
 /*
  * Find the longest match longer than 'best_len' bytes.
@@ -64,20 +91,24 @@
  * 'best_len' was found.
  */
 static forceinline u32
-hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
-			     const u8 ** const in_base_p,
-			     const u8 * const in_next,
-			     u32 best_len,
-			     const u32 max_len,
-			     const u32 nice_len,
-			     const u32 max_search_depth,
-			     u32 * const next_hashes,
-			     u32 * const offset_ret,
-			     const bool multi_hop)
+ADD_SUFFIX(hc_matchfinder_longest_match)(struct hc_matchfinder * const mf,
+					 const u8 ** const in_base_p,
+					 const u8 * const in_next,
+					 u32 best_len,
+					 const u32 max_len,
+					 const u32 nice_len,
+					 const u32 max_search_depth,
+					 u32 * const next_hashes,
+					 u32 * const offset_ret,
+					 const bool multi_hop
+					 SMALL_ORDER_PARAM)
 {
 	u32 depth_remaining = max_search_depth;
 	const u8 *best_matchptr = in_next;
 	mf_pos_t cur_node3, cur_node4;
+#if SMALL_INPUT
+	mf_pos_t *bucket3, *bucket4;
+#endif
 	hc_link_t cur_link = 0; /* nodes after cur_node4 (if multi_hop) */
 	hc_link_t next_link = 0; /* link of the last node in 'cur_link' */
 	unsigned link_remaining = 0; /* number of nodes left in 'cur_link' */
@@ -90,11 +121,13 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 	const u8 *in_base;
 	mf_pos_t cutoff;
 
+#if !SMALL_INPUT
 	if (cur_pos == MATCHFINDER_WINDOW_SIZE) {
 		hc_matchfinder_slide_window(mf, multi_hop);
 		*in_base_p += MATCHFINDER_WINDOW_SIZE;
 		cur_pos = 0;
 	}
+#endif
 
 	in_base = *in_base_p;
 	cutoff = cur_pos - MATCHFINDER_WINDOW_SIZE;
@@ -107,24 +140,38 @@ hc_matchfinder_longest_match(struct hc_matchfinder * const mf,
 	hash4 = next_hashes[1];
 
 	/* From the hash buckets, get the first node of each linked list.  */
-	cur_node3 = mf->hash3_tab[hash3];
-	cur_node4 = mf->hash4_tab[hash4];
+#if SMALL_INPUT
+	bucket3 = matchfinder_small_bucket(mf->hash3_tab,
+					   HC_MATCHFINDER_SLOT_SIZE,
+					   hash3,
+					   HC_MATCHFINDER_HASH3_ORDER,
+					   order);
+	bucket4 = matchfinder_small_bucket(mf->hash4_tab,
+					   HC_MATCHFINDER_SLOT_SIZE,
+					   hash4,
+					   HC_MATCHFINDER_HASH4_ORDER,
+					   order);
+#endif
+	cur_node3 = BUCKET3;
+	cur_node4 = BUCKET4;
 
 	/* Update for length 3 matches.  This replaces the singleton node in the
 	 * 'hash3' bucket with the node for the current sequence.  */
-	mf->hash3_tab[hash3] = cur_pos;
+	BUCKET3 = cur_pos;
 
 	/* Update for length 4 matches.  This prepends the node for the current
 	 * sequence to the linked list in the 'hash4' bucket.  */
-	mf->hash4_tab[hash4] = cur_pos;
+	BUCKET4 = cur_pos;
 	cur_link = hc_matchfinder_prepend(mf, cur_pos, cur_node4, multi_hop);
 
 	/* Compute the next hash codes.  */
 	next_hashseq = get_unaligned_le32(in_next + 1);
 	next_hashes[0] = lz_hash(next_hashseq & 0xFFFFFF, HC_MATCHFINDER_HASH3_ORDER);
 	next_hashes[1] = lz_hash(next_hashseq, HC_MATCHFINDER_HASH4_ORDER);
+#if !SMALL_INPUT
 	prefetchw(&mf->hash3_tab[next_hashes[0]]);
 	prefetchw(&mf->hash4_tab[next_hashes[1]]);
+#endif
 
 /*
  * Prepare to walk the linked list.  'cur_link' contains the nodes that follow
@@ -290,18 +337,22 @@ out:
  *	Whether to use multi-hop links; see 'next_tab'.
  */
 static forceinline void
-hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
-			  const u8 ** const in_base_p,
-			  const u8 *in_next,
-			  const u8 * const in_end,
-			  const u32 count,
-			  u32 * const next_hashes,
-			  const bool multi_hop)
+ADD_SUFFIX(hc_matchfinder_skip_bytes)(struct hc_matchfinder * const mf,
+				      const u8 ** const in_base_p,
+				      const u8 *in_next,
+				      const u8 * const in_end,
+				      const u32 count,
+				      u32 * const next_hashes,
+				      const bool multi_hop
+				      SMALL_ORDER_PARAM)
 {
 	u32 cur_pos;
 	u32 hash3, hash4;
 	u32 next_hashseq;
 	u32 remaining = count;
+#if SMALL_INPUT
+	mf_pos_t *bucket3, *bucket4;
+#endif
 
 	if (unlikely(count + 5 > in_end - in_next))
 		return;
@@ -310,15 +361,27 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 	hash3 = next_hashes[0];
 	hash4 = next_hashes[1];
 	do {
+#if SMALL_INPUT
+		bucket3 = matchfinder_small_bucket(mf->hash3_tab,
+						   HC_MATCHFINDER_SLOT_SIZE,
+						   hash3,
+						   HC_MATCHFINDER_HASH3_ORDER,
+						   order);
+		bucket4 = matchfinder_small_bucket(mf->hash4_tab,
+						   HC_MATCHFINDER_SLOT_SIZE,
+						   hash4,
+						   HC_MATCHFINDER_HASH4_ORDER,
+						   order);
+#else
 		if (cur_pos == MATCHFINDER_WINDOW_SIZE) {
 			hc_matchfinder_slide_window(mf, multi_hop);
 			*in_base_p += MATCHFINDER_WINDOW_SIZE;
 			cur_pos = 0;
 		}
-		mf->hash3_tab[hash3] = cur_pos;
-		hc_matchfinder_prepend(mf, cur_pos, mf->hash4_tab[hash4],
-				       multi_hop);
-		mf->hash4_tab[hash4] = cur_pos;
+#endif
+		BUCKET3 = cur_pos;
+		hc_matchfinder_prepend(mf, cur_pos, BUCKET4, multi_hop);
+		BUCKET4 = cur_pos;
 
 		next_hashseq = get_unaligned_le32(++in_next);
 		hash3 = lz_hash(next_hashseq & 0xFFFFFF, HC_MATCHFINDER_HASH3_ORDER);
@@ -326,8 +389,17 @@ hc_matchfinder_skip_bytes(struct hc_matchfinder * const mf,
 		cur_pos++;
 	} while (--remaining);
 
+#if !SMALL_INPUT
 	prefetchw(&mf->hash3_tab[hash3]);
 	prefetchw(&mf->hash4_tab[hash4]);
+#endif
 	next_hashes[0] = hash3;
 	next_hashes[1] = hash4;
 }
+
+#undef SMALL_ORDER_PARAM
+#undef BUCKET3
+#undef BUCKET4
+
+#undef SUFFIX
+#undef SMALL_INPUT
