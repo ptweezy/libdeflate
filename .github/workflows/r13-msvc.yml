@@ -13,10 +13,10 @@ env:
   # name ref pairs.  The library is built with CMake (Release), as a user
   # builds it, and msbench is linked against the static library.  The first
   # name is upstream master; the others are compared with it.
-  REFS: nb 7e66210 nb2 7e66210 c1 4fd9337 dc 0ab0e5b m6 e3445be
-  NAMES: nb,nb2,c1,dc,m6
-  EXPECT: nb:x,nb2:x,c1:x,dc:x,m6:x
-  PAIRS: nb:nb2,nb:c1,nb:dc,nb:m6,dc:c1
+  REFS: nb 7e66210 nb2 7e66210 c1 4fd9337 dc 0ab0e5b m6 e3445be m7 b9360aa a 6b5e5cc
+  NAMES: nb,nb2,c1,dc,m6,m7,a
+  EXPECT: nb:x,nb2:x,c1:x,dc:x,m6:x,m7:x,a:x
+  PAIRS: nb:nb2,nb:c1,nb:dc,nb:m6,nb:m7,nb:a,dc:c1
 jobs:
   prep:
     runs-on: ubuntu-24.04
@@ -36,12 +36,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, x86]
+        arch: [x86]
         set: [real]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         include:
-        - arch: x64
-          runner: windows-2025
         - arch: x86
           runner: windows-2025
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
@@ -62,6 +60,7 @@ jobs:
       shell: bash
       env:
         MSB_CPU: 2
+        MSAB_FRESH: 1
         SET: ${{ matrix.set }}
       run: |
         IN=$(cygpath -m "$RUNNER_TEMP/r8in")
@@ -75,7 +74,7 @@ jobs:
         if [ "${{ matrix.shard }}" = 1 ]; then cp "$BIN"/*.dis res/; fi
         if [ "$SET" = real ]; then
           FILES="$IN/real/*"
-          CFGS=1:1024,3:512,6:512,6:0
+          CFGS=1:1024,3:512,6:512
         else
           FILES="$IN/syn/* $IN/adv/avoid241 $IN/adv/s5mix $IN/adv/rev140 $IN/adv/thr1k $IN/adv/thr4k $IN/adv/thr64k"
           CFGS=12:0,10:0,12:4096,12:16384,10:16384

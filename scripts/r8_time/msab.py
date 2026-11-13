@@ -6,7 +6,7 @@ Runs the exes interleaved, with the order rotated every round, keeps each
 exe's minimum ns/byte per (cfg, file), checks that every exe produced the
 same output hash, and writes one TSV row per (cfg, file, exe).
 """
-import glob, os, subprocess, sys, time
+import glob, os, shutil, subprocess, sys, time
 
 bindir, rounds, reps, out = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 names = sys.argv[5].split(',')
@@ -16,10 +16,30 @@ for pat in sys.argv[sys.argv.index('--') + 1:]:
     files += sorted(glob.glob(pat))
 assert files, 'no input files'
 
+FRESH = os.environ.get('MSAB_FRESH') == '1'
+nrun = 0
+
 def run(name, lvl, chunk):
+    # MSAB_FRESH=1: run a new copy of the exe every time, so that each run
+    # gets new physical pages for the image (one file keeps its pages, and
+    # with them a fast or slow placement, for the whole job).
+    global nrun
     exe = os.path.join(bindir, name + '.exe')
-    res = subprocess.run([exe, lvl, chunk, str(reps)] + files,
-                         capture_output=True, text=True, check=True).stdout
+    tmp = None
+    if FRESH:
+        nrun += 1
+        tmp = os.path.join(bindir, 'fresh-%d-%s.exe' % (nrun, name))
+        shutil.copyfile(exe, tmp)
+        exe = tmp
+    try:
+        res = subprocess.run([exe, lvl, chunk, str(reps)] + files,
+                             capture_output=True, text=True, check=True).stdout
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     d = {}
     for line in res.splitlines():
         f, t, sz, h = line.rsplit(None, 3)
