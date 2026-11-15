@@ -42,17 +42,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # real, syn: CMake Release (/O2); o1, o1syn: CMake MinSizeRel (/O1)
+        # real, syn: CMake Release (/O2); o1, o1syn: CMake MinSizeRel (/O1).
+        # This run redoes only the /O1 sets (the first run linked msbench
+        # with /MT against the /MD library); real and syn are kept from
+        # run 43735213922.
         arch: [x64, x86]
-        set: [real, syn, o1, o1syn]
+        set: [o1, o1syn]
         shard: [1, 2, 3, 4]
-        exclude:
-        - {set: syn, shard: 3}
-        - {set: syn, shard: 4}
-        - {set: o1, shard: 3}
-        - {set: o1, shard: 4}
-        - {set: o1syn, shard: 3}
-        - {set: o1syn, shard: 4}
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
     runs-on: windows-2025
     timeout-minutes: 200

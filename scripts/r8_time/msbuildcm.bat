@@ -28,9 +28,14 @@ set B=%OUT%\b-%NAME%
 if not exist "%T%" git worktree add --detach "%T%" %REF% || exit /b 1
 cmake -S "%T%" -B "%B%" -A %PLAT% -DLIBDEFLATE_BUILD_GZIP=OFF -DLIBDEFLATE_BUILD_SHARED_LIB=OFF || exit /b 1
 cmake --build "%B%" --config %CFG% -- /v:n > "%OUT%\%NAME%.buildlog" || exit /b 1
-rem CMake's flags for the library are /O2 (Release) or /O1 (MinSizeRel),
-rem /DNDEBUG /std:c11, with the static runtime, so msbench uses /MT too.
-cl /nologo /O2 /W4 /WX /MT /I"%T%" /Fo"%B%\\" /Fe"%OUT%\%NAME%.exe" /Fm"%OUT%\%NAME%.map" "%HERE%msbench.c" "%B%\%CFG%\deflatestatic.lib" || exit /b 1
+rem The library's runtime follows CMake's per-config flags (the project needs
+rem only CMake 3.10, so CMP0091 is OLD): Release is the project's
+rem "-O2 -DNDEBUG", which names no runtime, so cl's default /MT applies;
+rem MinSizeRel is CMake's "/MD /O1 /Ob1 /DNDEBUG".  msbench must match, or
+rem x86 fails to link (__except_handler4_common).
+set RT=/MT
+if /i "%CFG%"=="MinSizeRel" set RT=/MD
+cl /nologo /O2 /W4 /WX %RT% /I"%T%" /Fo"%B%\\" /Fe"%OUT%\%NAME%.exe" /Fm"%OUT%\%NAME%.map" "%HERE%msbench.c" "%B%\%CFG%\deflatestatic.lib" || exit /b 1
 dumpbin /nologo /disasm:nobytes "%OUT%\%NAME%.exe" > "%OUT%\%NAME%.dis" || exit /b 1
 goto next
 :done

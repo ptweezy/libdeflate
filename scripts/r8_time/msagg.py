@@ -3,8 +3,9 @@
 
 DIR holds r13-msvc-ARCH-SET-SHARD/res.tsv per job.  PAIRS is a comma-separated
 list of A:B; a cell is (t_A / t_B - 1) * 100, so + means B is faster.  The
-main number uses each exe's minimum over all shards of one arch and set; the
-range in parentheses is the same cell computed within each shard.
+main number uses each exe's minimum over all shards of one arch and set that
+ran on the same CPU model; the range in parentheses is the same cell computed
+within each shard.
 """
 import glob, os, sys, statistics
 
@@ -12,12 +13,13 @@ root, pairs = sys.argv[1], [p.split(':') for p in sys.argv[2].split(',')]
 pooled, shard, order, cpus, diff = {}, {}, {}, {}, 0
 for path in sorted(glob.glob(os.path.join(root, '*', 'res.tsv'))):
     job = os.path.basename(os.path.dirname(path))
-    # one table per ARCH-SET: sets may time the same files with other builds
-    arch = '-'.join(job.split('-')[-3:-1])
+    # one table per ARCH-SET and runner CPU model: sets may time the same
+    # files with other builds, and hosted runners are not all the same CPU,
+    # so a minimum must not be pooled across CPU models
     cpu = os.path.join(os.path.dirname(path), 'cpu.txt')
-    if os.path.exists(cpu):
-        cpus.setdefault(arch, []).append(
-            job + ': ' + ' '.join(open(cpu).read().split()))
+    model = ' '.join(open(cpu).read().split()[:-1]) if os.path.exists(cpu) else '?'
+    arch = '-'.join(job.split('-')[-3:-1]) + ' on ' + model
+    cpus.setdefault(arch, []).append(job)
     for line in open(path):
         lvl, chunk, f, name, t, _, same = line.rstrip('\n').split('\t')
         diff += same != 'same'
@@ -29,9 +31,7 @@ for path in sorted(glob.glob(os.path.join(root, '*', 'res.tsv'))):
 print('output hash mismatches (rows): %d\n' % diff)
 for arch in sorted(order):
     print('## MSVC %s\n' % arch)
-    for c in cpus.get(arch, []):
-        print('- ' + c)
-    print()
+    print('shards: ' + ', '.join(cpus.get(arch, [])) + '\n')
     cfgs = []
     for k in pooled:
         if k[0] == arch and k[1] not in cfgs:
