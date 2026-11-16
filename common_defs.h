@@ -213,6 +213,16 @@ typedef size_t machine_word_t;
 #  define NORETURN
 #endif
 
+/*
+ * NO_ICF - keep the compiler from merging a function with an identical one
+ * (gcc's identical code folding), which can change where it gets inlined
+ */
+#if __has_attribute(no_icf)
+#  define NO_ICF		__attribute__((no_icf))
+#else
+#  define NO_ICF
+#endif
+
 /* likely(expr) - hint that an expression is usually true */
 #if defined(__GNUC__) || __has_builtin(__builtin_expect)
 #  define likely(expr)		__builtin_expect(!!(expr), 1)
