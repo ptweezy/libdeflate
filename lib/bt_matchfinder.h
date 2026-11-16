@@ -110,6 +110,38 @@ bt_matchfinder_init(struct bt_matchfinder *mf)
 	matchfinder_init((mf_pos_t *)mf, BT_MATCHFINDER_TOTAL_HASH_SIZE);
 }
 
+#define BT_MATCHFINDER_MAX_SPARSE_INIT_NBYTES \
+	MATCHFINDER_MAX_SPARSE_INIT_NBYTES(BT_MATCHFINDER_TOTAL_HASH_SIZE, 2)
+
+/*
+ * Like bt_matchfinder_init(), but empty only the hash buckets that the buffer
+ * 'in' of 'in_nbytes' bytes will use.  'in_nbytes' must be at most
+ * BT_MATCHFINDER_MAX_SPARSE_INIT_NBYTES.
+ */
+static forceinline void
+bt_matchfinder_init_sparse(struct bt_matchfinder *mf,
+			   const u8 *in, size_t in_nbytes)
+{
+	/* As in ht_matchfinder_init_sparse(), use 8-byte stores in hash3_tab. */
+	const u64 empty_pair = (u64)0x0001000100010001 *
+			       (u16)MATCHFINDER_INITVAL;
+	u8 *tab3 = (u8 *)mf->hash3_tab;
+	size_t i;
+
+	STATIC_ASSERT(sizeof(mf->hash3_tab[0]) == 4);
+	ASSERT(in_nbytes <= BT_MATCHFINDER_MAX_SPARSE_INIT_NBYTES);
+	store_u64_unaligned(empty_pair, tab3);
+	mf->hash4_tab[0] = MATCHFINDER_INITVAL;
+	for (i = 1; i + 4 <= in_nbytes; i++) {
+		u32 seq = get_unaligned_le32(&in[i]);
+		u32 hash3 = lz_hash(seq & 0xFFFFFF, BT_MATCHFINDER_HASH3_ORDER);
+
+		store_u64_unaligned(empty_pair, tab3 + (hash3 & ~1) * 4);
+		mf->hash4_tab[lz_hash(seq, BT_MATCHFINDER_HASH4_ORDER)] =
+			MATCHFINDER_INITVAL;
+	}
+}
+
 static forceinline void
 bt_matchfinder_slide_window(struct bt_matchfinder *mf)
 {
