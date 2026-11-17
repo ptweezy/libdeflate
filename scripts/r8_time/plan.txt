@@ -1,0 +1,37 @@
+# r8_time plan for the short-input commit: m0 = e62afee (upstream master
+# with PR 478), f1 = the commit.  See plan.py for the format.
+seedbase 41001
+series 1
+timeout 150
+
+# 1. Short inputs (the commit message's table, 64 B) and 2-4 KiB, where
+#    only the full length codewords change applies.
+group small ubuntu-24.04     g2 6 8  real 1:64:3:3 1:333:3:3 1:1024:3:3 1:2048:3:3 6:64:3:2 6:333:3:2 6:768:3:2 6:2048:3:2 12:333:3:2 12:1536:3:2 12:4096:3:2
+group small ubuntu-24.04     c2 6 8  real 1:64:3:3 1:333:3:3 1:1024:3:3 1:2048:3:3 6:64:3:2 6:333:3:2 6:768:3:2 6:2048:3:2 12:333:3:2 12:1536:3:2 12:4096:3:2
+group small ubuntu-24.04-arm g2 2 16 real 1:64:3:3 1:333:3:3 1:1024:3:3 1:2048:3:3 6:64:3:2 6:333:3:2 6:768:3:2 6:2048:3:2 12:333:3:2 12:1536:3:2 12:4096:3:2
+group small ubuntu-24.04-arm c2 2 16 real 1:64:3:3 1:333:3:3 1:1024:3:3 1:2048:3:3 6:64:3:2 6:333:3:2 6:768:3:2 6:2048:3:2 12:333:3:2 12:1536:3:2 12:4096:3:2
+
+# 2. 64 KiB chunks at the levels where earlier forms were slower, and
+#    level 10 in 4 KiB chunks.
+group mid   ubuntu-24.04     g2 3 8  real 1:65536:3:3 2:65536:3:2 6:65536:3:2 8:65536:3:2 10:65536:3:1 10:4096:3:2
+group mid   ubuntu-24.04     c2 3 8  real 1:65536:3:3 2:65536:3:2 6:65536:3:2 8:65536:3:2 10:65536:3:1 10:4096:3:2
+group mid   ubuntu-24.04-arm g2 2 12 real 1:65536:3:3 2:65536:3:2 6:65536:3:2 8:65536:3:2 10:65536:3:1 10:4096:3:2
+group mid   ubuntu-24.04-arm c2 2 12 real 1:65536:3:3 2:65536:3:2 6:65536:3:2 8:65536:3:2 10:65536:3:1 10:4096:3:2
+
+# 3. The adversarial and threshold alphabets.
+group adv   ubuntu-24.04     g2 2 8  adv  1:1024:3:3 6:768:3:2 12:1536:3:2 1:4096:3:3 6:4096:3:2
+group adv   ubuntu-24.04     c2 2 8  adv  1:1024:3:3 6:768:3:2 12:1536:3:2 1:4096:3:3 6:4096:3:2
+group adv   ubuntu-24.04-arm g2 1 16 adv  1:1024:3:3 6:768:3:2 12:1536:3:2 1:4096:3:3 6:4096:3:2
+group adv   ubuntu-24.04-arm c2 1 16 adv  1:1024:3:3 6:768:3:2 12:1536:3:2 1:4096:3:3 6:4096:3:2
+
+# 4. Whole files, L1 and L6, with the validation controls.
+group big   ubuntu-24.04     g2 6 32 real 1:0:3:5:pos64+plc1 6:0:5:2:pos16+plc1
+group big   ubuntu-24.04     c2 6 32 real 1:0:3:5:pos64+plc1 6:0:5:2:pos16+plc1
+group big   ubuntu-24.04-arm g2 4 32 real 1:0:3:5:pos48+plc1 6:0:5:2:pos12+plc1
+group big   ubuntu-24.04-arm c2 4 32 real 1:0:3:5:pos48+plc1 6:0:5:2:pos12+plc1
+
+# 5. L12 on whole files (slow).
+group l12   ubuntu-24.04     g2 6 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04     c2 6 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04-arm g2 4 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04-arm c2 4 16 real 12:0:5:1:plc2
