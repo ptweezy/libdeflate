@@ -1944,7 +1944,7 @@ deflate_precompute_huffman_header(struct libdeflate_compressor *c)
  * This runs once per block.  Inlined into deflate_flush_block(), it made gcc
  * compile the loops that output the block less well.
  */
-static void NOINLINE
+static void
 deflate_compute_full_len_codewords(struct libdeflate_compressor *c,
 				   const struct deflate_codes *codes)
 {
