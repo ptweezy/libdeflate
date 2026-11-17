@@ -1,0 +1,14 @@
+# r8_time diagnostic plan: m0 = e62afee, f1 = the sparse init alone
+# (0739eaf), f2 = f1 + the full length codewords (the tree of e959c8b), f3 =
+# f2 with deflate_compute_full_len_codewords() inlined (as in b3116ac), so
+# that f1/m0, f2/f1 and f3/f1 separate the parts on the cells where e959c8b
+# was slower than m0 on hosted runners (clang 18 on x86-64, gcc 13 on
+# aarch64), plus three short-input cells.  See plan.py for the format.
+seedbase 43001
+series 3
+timeout 150
+
+group diag ubuntu-24.04     c2 6 16 real 1:0:3:3 1:65536:3:3 2:65536:3:2 6:0:3:2 6:65536:3:2 8:65536:3:2 1:333:3:3 1:2048:3:3 6:768:3:2
+group diag ubuntu-24.04     g2 2 16 real 1:0:3:3 1:65536:3:3 2:65536:3:2 6:0:3:2 6:65536:3:2 8:65536:3:2 1:333:3:3 1:2048:3:3 6:768:3:2
+group diag ubuntu-24.04-arm g2 4 16 real 1:0:3:3 1:65536:3:3 2:65536:3:2 6:0:3:2 6:65536:3:2 8:65536:3:2 1:333:3:3 1:2048:3:3 6:768:3:2
+group diag ubuntu-24.04-arm c2 2 16 real 1:0:3:3 1:65536:3:3 2:65536:3:2 6:0:3:2 6:65536:3:2 8:65536:3:2 1:333:3:3 1:2048:3:3 6:768:3:2

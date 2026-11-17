@@ -1,0 +1,131 @@
+name: si-time
+# Test-only: randomized-layout timing of the commit series below HEAD on
+# hosted runners (scripts/r8_time).  Not for upstream.
+on:
+  push:
+    branches: ['si-time*']
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: Plan file under scripts/r8_time
+        default: plan.txt
+permissions:
+  contents: read
+concurrency:
+  group: si-time-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  # Each function's machine code in m0, f1, f2, and f3, compiled with the
+  # runner's gcc and clang (scripts/r8_time/fncmp.py).
+  codecmp:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        cc: [gcc, clang]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 12
+    - name: Compare
+      run: |
+        mkdir -p res t
+        for n in 4:m0 3:f1 2:f2 1:f3; do
+          mkdir -p "t/${n#*:}"
+          git archive "HEAD~${n%%:*}" | tar -x -C "t/${n#*:}"
+        done
+        ${{ matrix.cc }} --version | head -n 1 | tee res/cc.txt
+        for pair in m0:f1 f1:f2 f1:f3 m0:f2; do
+          a=${pair%%:*}; b=${pair#*:}
+          echo "=== $a vs $b" | tee -a res/fncmp.txt
+          python3 scripts/r8_time/fncmp.py ${{ matrix.cc }} "t/$a" "t/$b" | tee -a res/fncmp.txt
+        done
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: codecmp-${{ matrix.runner }}-${{ matrix.cc }}
+        path: res
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+    - uses: actions/checkout@v6
+    - name: Plan
+      id: plan
+      env:
+        PLAN: ${{ inputs.plan || 'plan.txt' }}
+      run: |
+        python3 scripts/r8_time/plan.py -v "scripts/r8_time/$PLAN"
+        python3 scripts/r8_time/plan.py "scripts/r8_time/$PLAN" >> "$GITHUB_OUTPUT"
+    - name: Inputs
+      run: bash scripts/r8_time/inputs.sh "$RUNNER_TEMP/r8in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: r8-inputs
+        path: ${{ runner.temp }}/r8in
+        retention-days: 3
+        compression-level: 1
+  shard:
+    needs: prep
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include: ${{ fromJSON(needs.prep.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 12
+    - uses: actions/download-artifact@v8
+      with:
+        name: r8-inputs
+        path: ${{ runner.temp }}/r8in
+    - name: Time
+      env:
+        R8_CI: 1
+        R8_NAME: ${{ matrix.name }}
+        R8_CFG: ${{ matrix.cfg }}
+        R8_SEEDS: ${{ matrix.seeds }}
+        R8_JOBS: ${{ matrix.jobs }}
+        R8_FILESET: ${{ matrix.fileset }}
+        R8_SERIES: ${{ matrix.series }}
+        R8_TIMEOUT: ${{ matrix.timeout }}
+        R8_LT_OPTS: ${{ matrix.ltopts }}
+        R8_IN: ${{ runner.temp }}/r8in
+        R8_ROOT: ${{ runner.temp }}/r8t
+      run: bash scripts/r8_time/shard.sh
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r8-shard-${{ matrix.name }}
+        path: ${{ runner.temp }}/r8t/res
+        if-no-files-found: warn
+  aggregate:
+    needs: shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: r8-shard-*
+        path: res
+    - name: Aggregate
+      run: |
+        python3 scripts/r8_time/agg.py res --md summary.md | tee summary.txt
+        cat summary.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r8-summary
+        path: |
+          summary.md
+          summary.txt
