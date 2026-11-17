@@ -1,0 +1,82 @@
+name: si-mac
+# Test-only: interleaved timing of the commits below the test-only one on
+# hosted macOS arm64 runners (Apple clang), with scripts/r8_time/abp.c: m0 =
+# upstream master with PR 478, f1 = the short-input commit.  Not for upstream.
+on:
+  push:
+    branches: ['si-mac*']
+permissions:
+  contents: read
+concurrency:
+  group: si-mac-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/r8_time/inputs.sh "$RUNNER_TEMP/r8in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: si-mac-inputs
+        path: ${{ runner.temp }}/r8in
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    name: macos-arm64-${{ matrix.shard }}
+    runs-on: macos-15
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 12
+    - uses: actions/download-artifact@v8
+      with:
+        name: si-mac-inputs
+        path: ${{ runner.temp }}/r8in
+    - name: Build
+      run: |
+        W=$RUNNER_TEMP/w
+        mkdir -p "$W"
+        for t in m0:HEAD~2 f1:HEAD~1; do
+          n=${t%%:*}; r=${t#*:}
+          git worktree add --detach "$W/src-$n" "$r"
+          cmake -S "$W/src-$n" -B "$W/b-$n" -DCMAKE_BUILD_TYPE=Release \
+            -DLIBDEFLATE_BUILD_STATIC_LIB=OFF -DLIBDEFLATE_BUILD_GZIP=OFF > /dev/null
+          cmake --build "$W/b-$n" -j4 > /dev/null
+          ls -l "$W/b-$n"/libdeflate*.dylib
+        done
+        cc -O2 -Wall -o "$W/abp" scripts/r8_time/abp.c
+        sysctl -n machdep.cpu.brand_string
+    - name: Time
+      run: |
+        W=$RUNNER_TEMP/w
+        IN=$RUNNER_TEMP/r8in
+        LIBS="$W/b-m0/libdeflate.dylib $W/b-f1/libdeflate.dylib"
+        mkdir -p res
+        sysctl -n machdep.cpu.brand_string > res/cpu.txt
+        run() {  # LEVEL CHUNK REPS SET
+          echo "=== L$1 chunk $2 set $4" | tee -a res/res.txt
+          "$W/abp" -l "$1" -s "$2" -r "$3" $LIBS -- $IN/$4/* | tee -a res/res.txt
+        }
+        for c in 1:64 1:333 1:1024 6:64 6:333 6:768 12:333 12:1536; do
+          run "${c%%:*}" "${c#*:}" 9 real
+        done
+        for c in 1:2048 6:2048 12:4096 10:4096; do
+          run "${c%%:*}" "${c#*:}" 7 real
+        done
+        for c in 1:65536 6:65536 8:65536 10:65536 1:0 6:0 12:0; do
+          run "${c%%:*}" "${c#*:}" 5 real
+        done
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: si-mac-res-${{ matrix.shard }}
+        path: res
