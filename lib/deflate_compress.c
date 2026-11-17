@@ -1937,18 +1937,29 @@ deflate_precompute_huffman_header(struct libdeflate_compressor *c)
 /*
  * To make it faster to output matches, compute the "full" match length
  * codewords, i.e. the concatenation of the litlen codeword and the extra bits
- * for each possible match length.
+ * for each possible match length.  Only the lengths up to the end of the last
+ * length slot that the block uses are needed.  That slot's symbol is the last
+ * litlen symbol used, so deflate_precompute_huffman_header() has found it.
+ *
+ * This runs once per block.  Inlined into deflate_flush_block(), it made gcc
+ * compile the loops that output the block less well.
  */
-static void
+static void NOINLINE
 deflate_compute_full_len_codewords(struct libdeflate_compressor *c,
 				   const struct deflate_codes *codes)
 {
+	/* Read this before c->o.length overwrites it. */
+	unsigned num_slots = c->o.precode.num_litlen_syms -
+			     DEFLATE_FIRST_LEN_SYM;
+	u32 end = num_slots < ARRAY_LEN(deflate_length_slot_base) ?
+		  deflate_length_slot_base[num_slots] :
+		  DEFLATE_MAX_MATCH_LEN + 1;
 	u32 len;
 
 	STATIC_ASSERT(MAX_LITLEN_CODEWORD_LEN +
 		      DEFLATE_MAX_EXTRA_LENGTH_BITS <= 32);
 
-	for (len = DEFLATE_MIN_MATCH_LEN; len <= DEFLATE_MAX_MATCH_LEN; len++) {
+	for (len = DEFLATE_MIN_MATCH_LEN; len < end; len++) {
 		unsigned slot = deflate_length_slot[len];
 		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
 		u32 extra_bits = len - deflate_length_slot_base[slot];

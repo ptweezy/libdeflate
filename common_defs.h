@@ -213,6 +213,15 @@ typedef size_t machine_word_t;
 #  define NORETURN
 #endif
 
+/* NOINLINE - prevent a function from being inlined */
+#if defined(__GNUC__) || __has_attribute(noinline)
+#  define NOINLINE		__attribute__((noinline))
+#elif defined(_MSC_VER)
+#  define NOINLINE		__declspec(noinline)
+#else
+#  define NOINLINE
+#endif
+
 /*
  * NO_ICF - keep the compiler from merging a function with an identical one
  * (gcc's identical code folding), which can change where it gets inlined
