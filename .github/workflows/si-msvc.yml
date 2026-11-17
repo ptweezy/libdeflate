@@ -15,11 +15,11 @@ env:
   # name ref pairs: m0 = upstream master with PR 478, f1 = the short-input
   # commit.  The library is built with CMake, as a user builds it (Release =
   # /O2, MinSizeRel = /O1), and msbench is linked against the static library.
-  REFS: m0 HEAD~2 f1 HEAD~1
-  NAMES: m0,m0p16,m0p32,m0p48,f1,f1p16,f1p32,f1p48
+  REFS: m0 e62afee f1 e959c8b
+  NAMES: m0p16,m0p32,m0p48,m0p64,f1p16,f1p32,f1p48,f1p64
   EXPECT: m0:x,f1:x
   PAIRS: m0:f1
-  MSB_PADS: 16 32 48
+  MSB_PADS: 16 32 48 64
 jobs:
   prep:
     runs-on: ubuntu-24.04
@@ -46,9 +46,15 @@ jobs:
       fail-fast: false
       matrix:
         # mid, whole: CMake Release (/O2); o1: CMake MinSizeRel (/O1).
+        # The cells that the previous run (pads 0-48) did not cover.
         arch: [x64, x86, arm64]
         set: [mid, whole, o1]
         shard: [1, 2]
+        exclude:
+        - {arch: x86, set: mid}
+        - {arch: x86, set: whole}
+        - {arch: arm64, set: mid}
+        - {arch: arm64, set: whole}
     name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
     timeout-minutes: 200
@@ -109,8 +115,7 @@ jobs:
         path: res
     - name: Aggregate
       run: |
-        python3 scripts/r8_time/mslay.py res m0 f1 16,32,48 | tee summary.md
-        python3 scripts/r8_time/msagg.py res "$PAIRS" | tee -a summary.md
+        python3 scripts/r8_time/mslay.py res m0 f1 16,32,48,64 | tee summary.md
         cat summary.md >> "$GITHUB_STEP_SUMMARY"
     - uses: actions/upload-artifact@v7
       if: always()

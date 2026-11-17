@@ -2,9 +2,12 @@
 """mspadchk.py BINDIR NAME... (test-only)
 
 For each NAME and each NAMEpP.exe that msbuildcm.bat linked with MSB_PADS,
-checks in the .map files that every function of deflate_compress.obj is
-exactly P bytes above its address in NAME.exe, i.e. that the padding moved
-libdeflate's code without changing it.  Exits 1 otherwise.
+checks in the .map files that every function of deflate_compress.obj moved by
+the same number of bytes from its address in NAME.exe, i.e. that the padding
+moved libdeflate's code without changing it, and that the padded builds of
+each NAME put the code at distinct offsets modulo 64.  (The move is P plus
+whatever alignment the linker adds, which differs between targets.)  Exits 1
+otherwise.
 """
 import glob, os, re, sys
 
@@ -21,13 +24,16 @@ bad = 0
 for name in names:
     base = funcs(os.path.join(bindir, name + '.map'))
     assert len(base) > 20, (name, len(base))
+    mods = []
     for path in sorted(glob.glob(os.path.join(bindir, name + 'p*.map'))):
-        p = int(re.search(r'p(\d+)\.map$', path).group(1))
         d = funcs(path)
-        moved = {f: d.get(f, -1) - a for f, a in base.items()}
-        wrong = {f: v for f, v in moved.items() if v != p}
+        moved = sorted({d.get(f, -1) - a for f, a in base.items()})
+        ok = len(moved) == 1 and moved[0] > 0
         print('%s: %d functions, moved by %s%s' % (
-            os.path.basename(path), len(base), sorted(set(moved.values())),
-            '' if not wrong else '  WRONG: ' + ', '.join(sorted(wrong)[:5])))
-        bad += bool(wrong)
+            os.path.basename(path), len(base), moved, '' if ok else '  NOT UNIFORM'))
+        bad += not ok
+        mods.append(moved[0] % 64)
+    if len(set(mods)) != len(mods):
+        print('%s: offsets modulo 64 repeat: %s' % (name, mods))
+        bad += 1
 sys.exit(1 if bad else 0)
