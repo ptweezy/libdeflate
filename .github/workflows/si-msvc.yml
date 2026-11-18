@@ -1,0 +1,122 @@
+name: si-msvc
+# Test-only: interleaved MSVC timing of two commits on hosted Windows runners
+# (scripts/r8_time/msab.py), each library linked at four code positions
+# (MSB_PADS) so that the comparison averages over them
+# (scripts/r8_time/mslay.py).  Not for upstream.
+on:
+  push:
+    branches: ['si-msvc*']
+permissions:
+  contents: read
+concurrency:
+  group: si-msvc-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # name ref pairs: m0 = upstream master with PR 478, f1 = the sparse init
+  # with one copy of the compressors, f2 = with two copies.  The library is built with CMake, as a user builds it (Release =
+  # /O2, MinSizeRel = /O1), and msbench is linked against the static library.
+  REFS: m0 e62afee f1 ff07741 f2 004fba4
+  NAMES: m0p16,m0p32,m0p48,m0p64,f1p16,f1p32,f1p48,f1p64,f2p16,f2p32,f2p48,f2p64
+  EXPECT: m0:x,f1:x,f2:x
+  PAIRS: m0:f1,m0:f2
+  MSB_PADS: 16 32 48 64
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: |
+        bash scripts/r8_time/inputs.sh "$RUNNER_TEMP/r8in"
+        # s256: the first 256 KiB of each real slice (the /O1 whole-input cells)
+        mkdir -p "$RUNNER_TEMP/r8in/s256"
+        for f in "$RUNNER_TEMP"/r8in/real/*; do
+          head -c 262144 "$f" > "$RUNNER_TEMP/r8in/s256/$(basename "$f")"
+        done
+    - uses: actions/upload-artifact@v7
+      with:
+        name: si-inputs
+        path: ${{ runner.temp }}/r8in
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        # real, mid, whole: CMake Release (/O2); o1: CMake MinSizeRel (/O1).
+        arch: [x64, x86, arm64]
+        set: [real, mid, whole, o1]
+        shard: [1, 2]
+    name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
+    timeout-minutes: 200
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 24
+    - uses: actions/download-artifact@v8
+      with:
+        name: si-inputs
+        path: ${{ runner.temp }}/r8in
+    - name: Build
+      shell: cmd
+      env:
+        MSB_CONFIG: ${{ startsWith(matrix.set, 'o1') && 'MinSizeRel' || 'Release' }}
+      run: call scripts\r8_time\msbuildcm.bat ${{ matrix.arch }} "%RUNNER_TEMP%\msb" %REFS%
+    - name: Time
+      shell: bash
+      env:
+        MSB_CPU: 2
+        MSAB_FRESH: 1
+        SET: ${{ matrix.set }}
+      run: |
+        IN=$(cygpath -m "$RUNNER_TEMP/r8in")
+        BIN=$(cygpath -m "$RUNNER_TEMP/msb")
+        mkdir -p res
+        powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors" | tr '\r\n' '  ' > res/cpu.txt
+        cat res/cpu.txt; echo
+        python scripts/r8_time/mslayout.py "$BIN" "$EXPECT" | tee res/layout.txt
+        test "${PIPESTATUS[0]}" = 0
+        python scripts/r8_time/mspadchk.py "$BIN" m0 f1 f2 | tee res/padchk.txt
+        test "${PIPESTATUS[0]}" = 0
+        cp "$BIN"/*.map "$BIN"/*.buildlog res/
+        if [ "${{ matrix.shard }}" = 1 ]; then cp "$BIN"/*.dis res/; fi
+        SYN="$IN/syn/* $IN/adv/* $IN/z3/alt128 $IN/z3/pre40 $IN/z3/pre70 $IN/z3/pre100 $IN/z3/pre120"
+        case $SET in
+        real)  FILES="$IN/real/*"; CFGS=1:64,1:333,1:1024,1:2048,6:333,6:768,12:333,12:1536 ;;
+        mid)   FILES="$IN/real/*"; CFGS=1:65536,2:65536,6:65536,8:65536,10:65536,10:4096,12:4096 ;;
+        whole) FILES="$IN/s256/*"; CFGS=1:0,6:0,12:0 ;;
+        o1)    FILES="$IN/s256/*"; CFGS=1:0,6:0,12:0,1:65536,6:65536 ;;
+        esac
+        python scripts/r8_time/msab.py "$BIN" 8 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: si-msvc-${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+        path: res
+        if-no-files-found: warn
+  aggregate:
+    needs: time
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: si-msvc-*
+        path: res
+    - name: Aggregate
+      run: |
+        for p in "m0 f1" "m0 f2" "f1 f2"; do
+          echo "# $p"; echo
+          python3 scripts/r8_time/mslay.py res $p 16,32,48,64
+        done | tee summary.md
+        cat summary.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: si-msvc-summary
+        path: summary.md
