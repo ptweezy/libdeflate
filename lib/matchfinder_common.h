@@ -116,6 +116,30 @@ matchfinder_init(mf_pos_t *data, size_t size)
 #endif
 
 /*
+ * Return true if a matchfinder that is starting on an input buffer of
+ * 'in_nbytes' bytes should empty just the hash buckets that the buffer will
+ * use, rather than its entire hash tables of 'table_size' bytes.  For each
+ * position, a bucket in each of 'num_tables' tables is emptied.
+ *
+ * The matchfinder looks up the first position in bucket 0 (the initial "next
+ * hash" is 0) and each later position in the bucket that its next bytes hash
+ * to, so it suffices to empty those buckets.  (Sliding the window reads every
+ * bucket, but these buffers are too short for the window to slide.)  But each
+ * bucket costs a hash computation and a store to a scattered location, which
+ * took as long as emptying up to 80 bytes of the tables sequentially on the x86
+ * and Arm CPUs measured.  So do it only for up to 1 position per 128 bytes of
+ * each table, where it costs at most about 60% as much as emptying the tables.
+ *
+ * This relies on the buffer not changing during compression, which
+ * libdeflate_deflate_compress() requires anyway.
+ */
+static forceinline bool
+matchfinder_init_sparsely(size_t in_nbytes, size_t table_size, int num_tables)
+{
+	return in_nbytes <= table_size / (128 * num_tables);
+}
+
+/*
  * Slide the matchfinder by MATCHFINDER_WINDOW_SIZE bytes.
  *
  * This must be called just after each MATCHFINDER_WINDOW_SIZE bytes have been

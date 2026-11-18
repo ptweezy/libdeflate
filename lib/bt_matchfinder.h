@@ -102,12 +102,40 @@ struct MATCHFINDER_ALIGNED bt_matchfinder {
 
 /* Prepare the matchfinder for a new input buffer.  */
 static forceinline void
-bt_matchfinder_init(struct bt_matchfinder *mf)
+bt_matchfinder_init(struct bt_matchfinder *mf, const u8 *in, size_t in_nbytes)
 {
 	STATIC_ASSERT(BT_MATCHFINDER_TOTAL_HASH_SIZE %
 		      MATCHFINDER_SIZE_ALIGNMENT == 0);
 
-	matchfinder_init((mf_pos_t *)mf, BT_MATCHFINDER_TOTAL_HASH_SIZE);
+	if (matchfinder_init_sparsely(in_nbytes,
+				      BT_MATCHFINDER_TOTAL_HASH_SIZE, 2)) {
+		/*
+		 * As in ht_matchfinder_init(), use 8-byte stores in
+		 * hash3_tab.
+		 */
+		const u64 empty_pair = (u64)0x0001000100010001 *
+				       (u16)MATCHFINDER_INITVAL;
+		u8 *tab3 = (u8 *)mf->hash3_tab;
+		size_t i;
+
+		STATIC_ASSERT(sizeof(mf->hash3_tab[0]) == 4);
+		store_u64_unaligned(empty_pair, tab3);
+		mf->hash4_tab[0] = MATCHFINDER_INITVAL;
+		for (i = 1; i + 4 <= in_nbytes; i++) {
+			u32 seq = get_unaligned_le32(&in[i]);
+			u32 hash3 = lz_hash(seq & 0xFFFFFF,
+					    BT_MATCHFINDER_HASH3_ORDER);
+
+			store_u64_unaligned(empty_pair,
+					    tab3 + (hash3 & ~1) * 4);
+			mf->hash4_tab[lz_hash(seq,
+					      BT_MATCHFINDER_HASH4_ORDER)] =
+				MATCHFINDER_INITVAL;
+		}
+	} else {
+		matchfinder_init((mf_pos_t *)mf,
+				 BT_MATCHFINDER_TOTAL_HASH_SIZE);
+	}
 }
 
 static forceinline void

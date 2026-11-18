@@ -234,12 +234,32 @@ hc_matchfinder_prepend(struct hc_matchfinder *mf, u32 cur_pos,
 
 /* Prepare the matchfinder for a new input buffer.  */
 static forceinline void
-hc_matchfinder_init(struct hc_matchfinder *mf, bool multi_hop)
+hc_matchfinder_init(struct hc_matchfinder *mf, const u8 *in, size_t in_nbytes,
+		    bool multi_hop)
 {
 	STATIC_ASSERT(HC_MATCHFINDER_TOTAL_HASH_SIZE %
 		      MATCHFINDER_SIZE_ALIGNMENT == 0);
 
-	matchfinder_init((mf_pos_t *)mf, HC_MATCHFINDER_TOTAL_HASH_SIZE);
+	if (matchfinder_init_sparsely(in_nbytes,
+				      HC_MATCHFINDER_TOTAL_HASH_SIZE, 2)) {
+		size_t i;
+
+		mf->hash3_tab[0] = MATCHFINDER_INITVAL;
+		mf->hash4_tab[0] = MATCHFINDER_INITVAL;
+		for (i = 1; i + 4 <= in_nbytes; i++) {
+			u32 seq = get_unaligned_le32(&in[i]);
+
+			mf->hash3_tab[lz_hash(seq & 0xFFFFFF,
+					      HC_MATCHFINDER_HASH3_ORDER)] =
+				MATCHFINDER_INITVAL;
+			mf->hash4_tab[lz_hash(seq,
+					      HC_MATCHFINDER_HASH4_ORDER)] =
+				MATCHFINDER_INITVAL;
+		}
+	} else {
+		matchfinder_init((mf_pos_t *)mf,
+				 HC_MATCHFINDER_TOTAL_HASH_SIZE);
+	}
 
 	/*
 	 * With multi-hop links, the first node inserted will have the link of

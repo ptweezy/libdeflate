@@ -59,12 +59,36 @@ struct MATCHFINDER_ALIGNED ht_matchfinder {
 			 [HT_MATCHFINDER_BUCKET_SIZE];
 };
 
+/* Prepare the matchfinder for a new input buffer.  */
 static forceinline void
-ht_matchfinder_init(struct ht_matchfinder *mf)
+ht_matchfinder_init(struct ht_matchfinder *mf, const u8 *in, size_t in_nbytes)
 {
 	STATIC_ASSERT(sizeof(*mf) % MATCHFINDER_SIZE_ALIGNMENT == 0);
 
-	matchfinder_init((mf_pos_t *)mf, sizeof(*mf));
+	if (matchfinder_init_sparsely(in_nbytes, sizeof(*mf), 1)) {
+		/*
+		 * Empty each bucket together with the one next to it, with one
+		 * aligned 8-byte store.  On Apple M1, 4-byte stores made this
+		 * slower than emptying the whole table for inputs of 512 bytes.
+		 * The store covers two buckets, so address it from the start of
+		 * the table rather than from one bucket.
+		 */
+		const u64 empty_pair = (u64)0x0001000100010001 *
+				       (u16)MATCHFINDER_INITVAL;
+		u8 *tab = (u8 *)mf->hash_tab;
+		size_t i;
+
+		STATIC_ASSERT(sizeof(mf->hash_tab[0]) == 4);
+		store_u64_unaligned(empty_pair, tab);
+		for (i = 1; i + 4 <= in_nbytes; i++) {
+			u32 hash = lz_hash(get_unaligned_le32(&in[i]),
+					   HT_MATCHFINDER_HASH_ORDER);
+
+			store_u64_unaligned(empty_pair, tab + (hash & ~1) * 4);
+		}
+	} else {
+		matchfinder_init((mf_pos_t *)mf, sizeof(*mf));
+	}
 }
 
 static forceinline void

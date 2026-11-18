@@ -2792,8 +2792,6 @@ deflate_compress_fastest(struct libdeflate_compressor * restrict c,
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hash = 0;
 
-	ht_matchfinder_init(&c->p.f.ht_mf);
-
 	do {
 		/* Starting a new DEFLATE block */
 
@@ -2879,8 +2877,6 @@ deflate_compress_greedy(struct libdeflate_compressor * restrict c,
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
 
-	hc_matchfinder_init(&c->p.g.hc_mf, GREEDY_MULTI_HOP);
-
 	do {
 		/* Starting a new DEFLATE block */
 
@@ -2956,8 +2952,6 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	u32 next_hashes[2] = {0, 0};
-
-	hc_matchfinder_init(&c->p.g.hc_mf, LAZY_MULTI_HOP);
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -4027,7 +4021,7 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 	u32 next_hashes[2] = {0, 0};
 	bool prev_block_used_only_literals = false;
 
-	bt_matchfinder_init(&c->p.n.bt_mf);
+	bt_matchfinder_init(&c->p.n.bt_mf, in, in_nbytes);
 	deflate_near_optimal_init_stats(c);
 
 	do {
@@ -4465,6 +4459,31 @@ libdeflate_alloc_compressor(int compression_level)
 	return libdeflate_alloc_compressor_ex(compression_level, &defaults);
 }
 
+/*
+ * Prepare the matchfinder of a fastest, greedy, or lazy compressor for a new
+ * input buffer.  This is done here rather than by the compression functions, so
+ * that code that runs once per buffer doesn't affect how their loops are
+ * compiled.  deflate_compress_near_optimal() still does it itself, since moving
+ * it out made that function slower with Apple clang and gcc 14.
+ */
+static void
+deflate_init_matchfinder(struct libdeflate_compressor *c,
+			 const u8 *in, size_t in_nbytes)
+{
+#if SUPPORT_NEAR_OPTIMAL_PARSING
+	if (c->compression_level >= 10)
+		return;
+#endif
+	if (c->compression_level >= 5)
+		hc_matchfinder_init(&c->p.g.hc_mf, in, in_nbytes,
+				    LAZY_MULTI_HOP);
+	else if (c->compression_level >= 2)
+		hc_matchfinder_init(&c->p.g.hc_mf, in, in_nbytes,
+				    GREEDY_MULTI_HOP);
+	else
+		ht_matchfinder_init(&c->p.f.ht_mf, in, in_nbytes);
+}
+
 LIBDEFLATEAPI size_t
 libdeflate_deflate_compress(struct libdeflate_compressor *c,
 			    const void *in, size_t in_nbytes,
@@ -4504,7 +4523,8 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.end = os.next + out_nbytes_avail;
 	os.overflow = false;
 
-	/* Call the actual compression function. */
+	/* Prepare the matchfinder and call the actual compression function. */
+	deflate_init_matchfinder(c, in, in_nbytes);
 	(*c->impl)(c, in, in_nbytes, &os);
 
 	/* Return 0 if the output buffer is too small. */
