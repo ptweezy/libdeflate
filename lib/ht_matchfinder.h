@@ -59,35 +59,46 @@ struct MATCHFINDER_ALIGNED ht_matchfinder {
 			 [HT_MATCHFINDER_BUCKET_SIZE];
 };
 
-/* Prepare the matchfinder for a new input buffer.  */
 static forceinline void
-ht_matchfinder_init(struct ht_matchfinder *mf, const u8 *in, size_t in_nbytes)
+ht_matchfinder_init(struct ht_matchfinder *mf)
 {
 	STATIC_ASSERT(sizeof(*mf) % MATCHFINDER_SIZE_ALIGNMENT == 0);
 
-	if (matchfinder_init_sparsely(in_nbytes, sizeof(*mf), 1)) {
-		/*
-		 * Empty each bucket together with the one next to it, with one
-		 * aligned 8-byte store.  On Apple M1, 4-byte stores made this
-		 * slower than emptying the whole table for inputs of 512 bytes.
-		 * The store covers two buckets, so address it from the start of
-		 * the table rather than from one bucket.
-		 */
-		const u64 empty_pair = (u64)0x0001000100010001 *
-				       (u16)MATCHFINDER_INITVAL;
-		u8 *tab = (u8 *)mf->hash_tab;
-		size_t i;
+	matchfinder_init((mf_pos_t *)mf, sizeof(*mf));
+}
 
-		STATIC_ASSERT(sizeof(mf->hash_tab[0]) == 4);
-		store_u64_unaligned(empty_pair, tab);
-		for (i = 1; i + 4 <= in_nbytes; i++) {
-			u32 hash = lz_hash(get_unaligned_le32(&in[i]),
-					   HT_MATCHFINDER_HASH_ORDER);
+#define HT_MATCHFINDER_MAX_SPARSE_INIT_NBYTES \
+	MATCHFINDER_MAX_SPARSE_INIT_NBYTES(sizeof(struct ht_matchfinder), 1)
 
-			store_u64_unaligned(empty_pair, tab + (hash & ~1) * 4);
-		}
-	} else {
-		matchfinder_init((mf_pos_t *)mf, sizeof(*mf));
+/*
+ * Like ht_matchfinder_init(), but empty only the hash buckets that the buffer
+ * 'in' of 'in_nbytes' bytes will use.  'in_nbytes' must be at most
+ * HT_MATCHFINDER_MAX_SPARSE_INIT_NBYTES.
+ */
+static forceinline void
+ht_matchfinder_init_sparse(struct ht_matchfinder *mf,
+			   const u8 *in, size_t in_nbytes)
+{
+	/*
+	 * Empty each bucket together with the one next to it, with one aligned
+	 * 8-byte store.  On Apple M1, 4-byte stores made this slower than
+	 * emptying the whole table for inputs of 512 bytes.  (The pairs are
+	 * addressed from the start of the table, since gcc 14 warns about an
+	 * 8-byte store to &hash_tab[i].)
+	 */
+	const u64 empty_pair = (u64)0x0001000100010001 *
+			       (u16)MATCHFINDER_INITVAL;
+	u8 *tab = (u8 *)mf->hash_tab;
+	size_t i;
+
+	STATIC_ASSERT(sizeof(mf->hash_tab[0]) == 4);
+	ASSERT(in_nbytes <= HT_MATCHFINDER_MAX_SPARSE_INIT_NBYTES);
+	store_u64_unaligned(empty_pair, tab);
+	for (i = 1; i + 4 <= in_nbytes; i++) {
+		u32 hash = lz_hash(get_unaligned_le32(&in[i]),
+				   HT_MATCHFINDER_HASH_ORDER);
+
+		store_u64_unaligned(empty_pair, tab + (hash & ~1) * 4);
 	}
 }
 

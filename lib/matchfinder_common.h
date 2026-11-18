@@ -116,10 +116,10 @@ matchfinder_init(mf_pos_t *data, size_t size)
 #endif
 
 /*
- * Return true if a matchfinder that is starting on an input buffer of
- * 'in_nbytes' bytes should empty just the hash buckets that the buffer will
- * use, rather than its entire hash tables of 'table_size' bytes.  For each
- * position, a bucket in each of 'num_tables' tables is emptied.
+ * The largest input buffer for which a matchfinder may be initialized
+ * "sparsely", i.e. with only the hash buckets that the buffer will use emptied,
+ * rather than its entire hash tables of 'table_size' bytes.  For each position,
+ * a bucket in each of 'num_tables' tables is emptied.
  *
  * The matchfinder looks up the first position in bucket 0 (the initial "next
  * hash" is 0) and each later position in the bucket that its next bytes hash
@@ -133,11 +133,8 @@ matchfinder_init(mf_pos_t *data, size_t size)
  * This relies on the buffer not changing during compression, which
  * libdeflate_deflate_compress() requires anyway.
  */
-static forceinline bool
-matchfinder_init_sparsely(size_t in_nbytes, size_t table_size, int num_tables)
-{
-	return in_nbytes <= table_size / (128 * num_tables);
-}
+#define MATCHFINDER_MAX_SPARSE_INIT_NBYTES(table_size, num_tables) \
+	((table_size) / (128 * (num_tables)))
 
 /*
  * Slide the matchfinder by MATCHFINDER_WINDOW_SIZE bytes.
