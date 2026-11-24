@@ -103,6 +103,16 @@ if(NOT MSVC)
         $<$<BOOL:${HAVE_WVLA}>:-Wvla>
     )
 endif()
+# Apple's clang can outline repeated instruction sequences into separate
+# functions even at -O2.  That saves a little code size, but it puts calls into
+# hot loops; for example, it makes level 6 compression about 3% slower on an
+# Apple M5.  So turn it off, except when optimizing for size.
+if(APPLE)
+    check_c_compiler_flag(-mno-outline HAVE_MNO_OUTLINE)
+    if(HAVE_MNO_OUTLINE)
+        add_compile_options($<$<NOT:$<CONFIG:MinSizeRel>>:-mno-outline>)
+    endif()
+endif()
 if(LIBDEFLATE_FREESTANDING)
     add_definitions(-DFREESTANDING)
 endif()
