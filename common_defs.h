@@ -310,6 +310,16 @@ typedef size_t machine_word_t;
 #endif
 
 /*
+ * _function_aligned_attribute(n) - start the annotated function on an n-byte
+ * boundary, if the compiler supports that.
+ */
+#if defined(__GNUC__) || __has_attribute(aligned)
+#  define _function_aligned_attribute(n)	__attribute__((aligned(n)))
+#else
+#  define _function_aligned_attribute(n)
+#endif
+
+/*
  * _target_attribute(attrs) - override the compilation target for a function.
  *
  * This accepts one or more comma-separated suffixes to the -m prefix jointly

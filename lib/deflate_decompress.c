@@ -987,6 +987,19 @@ enum fastloop_result {
 	FASTLOOP_BAD_DATA,
 };
 
+/*
+ * FASTLOOP_ALIGN - attribute for the fastloop functions, where decompression
+ * spends most of its time.  How fast some arm64 CPUs (e.g. the Apple M4) run
+ * the fastloop depends on where it falls relative to 64-byte boundaries, so
+ * start it on one.  Otherwise its speed changes with the size of whatever
+ * unrelated code the linker happens to place before it.
+ */
+#if defined(ARCH_ARM64)
+#  define FASTLOOP_ALIGN	_function_aligned_attribute(64)
+#else
+#  define FASTLOOP_ALIGN
+#endif
+
 /* Include architecture-specific implementation(s) if available. */
 #undef DEFAULT_IMPL
 #undef arch_select_decompress_func
