@@ -1,7 +1,7 @@
 /* [test only] variant defines begin */
-/* variant: DEF */
-#undef MLSD_CI_DEFAULTS
-#define MLSD_CI_DEFAULTS 1
+/* variant: NOQOS */
+#undef MLSD_QOS_CHECK
+#define MLSD_QOS_CHECK 0
 /* [test only] variant defines end */
 /*
  * deflate_decompress.c - a decompressor for DEFLATE
