@@ -211,6 +211,24 @@ if(LIBDEFLATE_COMPRESSION_SUPPORT)
          lib/x86/find_min_cost_path.h
          lib/x86/matchfinder_impl.h
     )
+    # Apple's clang outlines repeated instruction sequences even at -O2, which
+    # puts calls into the compressor's hot loops and makes level 6 compression
+    # about 6% slower on Apple M1 and M4.  The Xcode generator doesn't support
+    # per-config per-source options, so with it MinSizeRel gets the flag too.
+    if(APPLE)
+        check_c_compiler_flag(-mno-outline HAVE_MNO_OUTLINE)
+        if(HAVE_MNO_OUTLINE)
+            if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.11 AND NOT XCODE)
+                set_property(SOURCE lib/deflate_compress.c APPEND PROPERTY
+                             COMPILE_OPTIONS
+                             "$<$<NOT:$<CONFIG:MinSizeRel>>:-mno-outline>")
+            elseif(NOT CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+                set_property(SOURCE lib/deflate_compress.c
+                             APPEND_STRING PROPERTY
+                             COMPILE_FLAGS " -mno-outline")
+            endif()
+        endif()
+    endif()
 endif()
 if(LIBDEFLATE_DECOMPRESSION_SUPPORT)
     list(APPEND LIB_SOURCES
