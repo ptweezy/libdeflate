@@ -1,0 +1,72 @@
+name: nooutline-mac
+# Test-only: where in a 128-byte line should the decompression fastloop sit?
+# HEAD~2 = upstream master, HEAD~1 = PR 487 (-mno-outline on Apple), HEAD =
+# this test-only commit.  scripts/nooutline_ci/sweep.sh builds the PR's dylib
+# with decompress_fastloop_unchecked_neon() at 8 offsets within a 128-byte
+# line (nothing else changed) and times decompression of each against master,
+# each library alone in its own process per file.  Not for upstream.
+on:
+  push:
+    branches: ['nooutline-mac*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nooutline-mac-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/nooutline_ci/inputs.sh "$RUNNER_TEMP/in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+        retention-days: 3
+        compression-level: 1
+
+  sweep:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { image: xcode-27, xcode: /Applications/Xcode_27.2.app, shard: 1 }
+        - { image: xcode-27, xcode: /Applications/Xcode_27.2.app, shard: 2 }
+    name: sweep ${{ matrix.image }} ${{ matrix.shard }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 4
+    - uses: actions/download-artifact@v8
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+    - name: Sweep
+      env:
+        IMAGE: ${{ matrix.image }}
+        XCODE: ${{ matrix.xcode }}
+      run: bash scripts/nooutline_ci/sweep.sh "$RUNNER_TEMP/in" "$RUNNER_TEMP/res"
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo '```'
+          cat "$RUNNER_TEMP/res/meta.txt" 2>/dev/null || echo "no results"
+          python3 scripts/nooutline_ci/sweep_summary.py "$RUNNER_TEMP/res" 2>/dev/null || true
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: sweep-${{ matrix.image }}-${{ matrix.shard }}
+        path: |
+          ${{ runner.temp }}/res/meta.txt
+          ${{ runner.temp }}/res/res.txt
+        if-no-files-found: warn
