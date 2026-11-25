@@ -1,0 +1,97 @@
+name: nooutline-mac
+# Test-only: -mno-outline for the compressor only, plus the decompression
+# fastloops aligned to 64 bytes on arm64, on top of PR 487.  HEAD~4 = upstream
+# master, HEAD~3 = PR 487, HEAD~2 = -mno-outline only for lib/deflate_compress.c
+# (decompressor code as on master), HEAD~1 = + fastloop alignment, HEAD = this
+# test-only commit.  Master vs HEAD~1 (test) and vs HEAD~2 (extra), CMake
+# Release dylibs, each library timed alone in its own process per file, with a
+# copy of master as an A/A control (scripts/nooutline_ci).  Not for upstream.
+on:
+  push:
+    branches: ['nooutline-mac*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nooutline-mac-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/nooutline_ci/inputs.sh "$RUNNER_TEMP/in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+        retention-days: 3
+        compression-level: 1
+
+  mac:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { image: xcode-27, xcode: /Applications/Xcode_27.2.app, shard: 1 }
+        - { image: xcode-27, xcode: /Applications/Xcode_27.2.app, shard: 2 }
+    name: ${{ matrix.image }} ${{ matrix.shard }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 6
+    - uses: actions/download-artifact@v8
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+    - name: Time
+      env:
+        IMAGE: ${{ matrix.image }}
+        XCODE: ${{ matrix.xcode }}
+        AB_BASE: HEAD~4
+        AB_TEST: HEAD~1
+        AB_EXTRA: HEAD~2
+        AB_COMP_LEVELS: 1 4 5 6 7 8 9 10 12
+        AB_DECOMP_LEVELS: 1 6
+        AB_ALIGNED: '0'
+      run: bash scripts/nooutline_ci/time.sh "$RUNNER_TEMP/in" "$RUNNER_TEMP/res"
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo '```'
+          cat "$RUNNER_TEMP/res/meta.txt" 2>/dev/null || echo "no timing results"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: time-${{ matrix.image }}-${{ matrix.shard }}
+        path: |
+          ${{ runner.temp }}/res/meta.txt
+          ${{ runner.temp }}/res/res.txt
+        if-no-files-found: warn
+
+  report:
+    needs: mac
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        path: ${{ runner.temp }}/all
+    - name: Report
+      run: |
+        python3 scripts/nooutline_ci/summarize.py "$RUNNER_TEMP/all" | tee report.md
+        cat report.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: report
+        path: report.md
