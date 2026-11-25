@@ -105,12 +105,14 @@ if(NOT MSVC)
 endif()
 # Apple's clang can outline repeated instruction sequences into separate
 # functions even at -O2.  That saves a little code size, but it puts calls into
-# hot loops; for example, it makes level 6 compression about 3% slower on an
-# Apple M5.  So turn it off, except when optimizing for size.
+# the compressor's hot loops; for example, it makes level 6 compression about 3%
+# slower on an Apple M5.  So turn it off for the compressor, except when
+# optimizing for size.  (Needs CMake 3.11 or later; ignored otherwise.)
 if(APPLE)
     check_c_compiler_flag(-mno-outline HAVE_MNO_OUTLINE)
     if(HAVE_MNO_OUTLINE)
-        add_compile_options($<$<NOT:$<CONFIG:MinSizeRel>>:-mno-outline>)
+        set_property(SOURCE lib/deflate_compress.c APPEND PROPERTY
+                     COMPILE_OPTIONS $<$<NOT:$<CONFIG:MinSizeRel>>:-mno-outline>)
     endif()
 endif()
 if(LIBDEFLATE_FREESTANDING)
