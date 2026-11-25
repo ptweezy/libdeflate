@@ -1,0 +1,134 @@
+name: nooutline-mac
+# Test-only: does PR 487 (CMake passes -mno-outline on Apple) hold up on the
+# GitHub-hosted Apple silicon (M1) runners?  HEAD~2 = upstream master, HEAD~1
+# = the PR's commit, HEAD = this test-only commit.  Not for upstream.
+#   probe: for every Xcode on each image, flag detection, outlined-function
+#          counts, code size, MinSizeRel/universal/Xcode-generator builds,
+#          warnings, ctest
+#   time:  master vs PR CMake Release dylibs, each timed alone in its own
+#          process, rounds in rotated order with an A/A control (a copy of
+#          master), output identity checked; each image's default Xcode,
+#          and Xcode 27.2 (the compiler of the PR's M5 measurement) on the
+#          xcode-27 image; scripts/nooutline_ci
+on:
+  push:
+    branches: ['nooutline-mac*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nooutline-mac-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/nooutline_ci/inputs.sh "$RUNNER_TEMP/in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+        retention-days: 3
+        compression-level: 1
+
+  # Branch nooutline-mac-15w: retry of the macos-15 job that capacity dropped,
+  # plus (job warn) the build warnings seen with Xcode 26.4.1.
+  mac:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { image: macos-15, xcode: /Applications/Xcode_16.4.app, probe: true, shard: 1 }
+    name: ${{ matrix.image }} ${{ matrix.shard }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 4
+    - uses: actions/download-artifact@v8
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+    - name: Probe
+      if: matrix.probe
+      env:
+        IMAGE: ${{ matrix.image }}
+      run: bash scripts/nooutline_ci/probe.sh "$RUNNER_TEMP/probe"
+    - name: Time
+      if: ${{ !cancelled() }}
+      env:
+        IMAGE: ${{ matrix.image }}
+        XCODE: ${{ matrix.xcode }}
+      run: bash scripts/nooutline_ci/time.sh "$RUNNER_TEMP/in" "$RUNNER_TEMP/res"
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo '```'
+          cat "$RUNNER_TEMP/probe/probe.txt" 2>/dev/null || true
+          cat "$RUNNER_TEMP/res/meta.txt" 2>/dev/null || echo "no timing results"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: time-${{ matrix.image }}-${{ matrix.shard }}
+        path: |
+          ${{ runner.temp }}/res/meta.txt
+          ${{ runner.temp }}/res/res.txt
+        if-no-files-found: warn
+    - uses: actions/upload-artifact@v7
+      if: always() && matrix.probe
+      with:
+        name: probe-${{ matrix.image }}
+        path: ${{ runner.temp }}/probe/probe.txt
+        if-no-files-found: warn
+
+  warn:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 4
+    - name: Warnings with Xcode 26.4.1 and 26.6, master vs PR, tests on
+      run: |
+        W=$RUNNER_TEMP/w
+        mkdir -p "$W"
+        for x in Xcode_26.4.1 Xcode_26.6; do
+          export DEVELOPER_DIR=/Applications/$x.app/Contents/Developer
+          echo "=== $x: $(cc --version | head -1)"
+          for t in master:HEAD~2 pr:HEAD~1; do
+            n=${t%%:*}; r=${t#*:}
+            rm -rf "$W/src-$n" "$W/b-$x-$n"; mkdir -p "$W/src-$n"
+            git archive "$r" | tar -x -C "$W/src-$n"
+            { cmake -S "$W/src-$n" -B "$W/b-$x-$n" -DCMAKE_BUILD_TYPE=Release -DLIBDEFLATE_BUILD_TESTS=ON &&
+              cmake --build "$W/b-$x-$n" -j3 -- VERBOSE=1; } > "$W/b-$x-$n.log" 2>&1 || echo "BUILD FAILED"
+            echo "--- $x $n: $(grep -c 'warning:' "$W/b-$x-$n.log") lines with warning:"
+            grep -n -B3 -A3 'warning:' "$W/b-$x-$n.log" | cut -c1-400 || true
+          done
+        done
+
+  report:
+    needs: [mac, warn]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        path: ${{ runner.temp }}/all
+    - name: Report
+      run: |
+        python3 scripts/nooutline_ci/summarize.py "$RUNNER_TEMP/all" | tee report.md
+        cat report.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: report
+        path: report.md
