@@ -1,0 +1,115 @@
+name: nooutline-mac
+# Test-only: does PR 487 (CMake passes -mno-outline on Apple) hold up on the
+# GitHub-hosted Apple silicon (M1) runners?  HEAD~2 = upstream master, HEAD~1
+# = the PR's commit, HEAD = this test-only commit.  Not for upstream.
+#   probe: for every Xcode on each image, flag detection, outlined-function
+#          counts, code size, MinSizeRel/universal/Xcode-generator builds,
+#          warnings, ctest
+#   time:  master vs PR CMake Release dylibs, each timed alone in its own
+#          process, rounds in rotated order with an A/A control (a copy of
+#          master), output identity checked; each image's default Xcode,
+#          and Xcode 27.2 (the compiler of the PR's M5 measurement) on the
+#          xcode-27 image; scripts/nooutline_ci
+on:
+  push:
+    branches: ['nooutline-mac*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nooutline-mac-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/nooutline_ci/inputs.sh "$RUNNER_TEMP/in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+        retention-days: 3
+        compression-level: 1
+
+  # Levels 10-12 only, 18 rounds (branch nooutline-mac-slow): the 5-round
+  # numbers of the main runs are too noisy on these runners for these levels.
+  mac:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { image: xcode-27, xcode: /Applications/Xcode_27.2.app, probe: false, shard: slow1 }
+        - { image: xcode-27, xcode: /Applications/Xcode_27.2.app, probe: false, shard: slow2 }
+        - { image: macos-26, xcode: /Applications/Xcode_26.6.app, probe: false, shard: slow1 }
+    name: ${{ matrix.image }} ${{ matrix.shard }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 4
+    - uses: actions/download-artifact@v8
+      with:
+        name: inputs
+        path: ${{ runner.temp }}/in
+    - name: Probe
+      if: matrix.probe
+      env:
+        IMAGE: ${{ matrix.image }}
+      run: bash scripts/nooutline_ci/probe.sh "$RUNNER_TEMP/probe"
+    - name: Time
+      if: ${{ !cancelled() }}
+      env:
+        IMAGE: ${{ matrix.image }}-slow
+        XCODE: ${{ matrix.xcode }}
+        AB_COMP_LEVELS: 10 11 12
+        AB_DECOMP_LEVELS: ' '
+        AB_ALIGNED: '0'
+        AB_ROUNDS_SLOW: '18'
+      run: bash scripts/nooutline_ci/time.sh "$RUNNER_TEMP/in" "$RUNNER_TEMP/res"
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo '```'
+          cat "$RUNNER_TEMP/probe/probe.txt" 2>/dev/null || true
+          cat "$RUNNER_TEMP/res/meta.txt" 2>/dev/null || echo "no timing results"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: time-${{ matrix.image }}-${{ matrix.shard }}
+        path: |
+          ${{ runner.temp }}/res/meta.txt
+          ${{ runner.temp }}/res/res.txt
+        if-no-files-found: warn
+    - uses: actions/upload-artifact@v7
+      if: always() && matrix.probe
+      with:
+        name: probe-${{ matrix.image }}
+        path: ${{ runner.temp }}/probe/probe.txt
+        if-no-files-found: warn
+
+  report:
+    needs: mac
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        path: ${{ runner.temp }}/all
+    - name: Report
+      run: |
+        python3 scripts/nooutline_ci/summarize.py "$RUNNER_TEMP/all" | tee report.md
+        cat report.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: report
+        path: report.md
