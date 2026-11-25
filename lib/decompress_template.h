@@ -1377,7 +1377,7 @@ block_done:
 	return FASTLOOP_BLOCK_DONE;
 }
 
-static NOINLINE ATTRIBUTES enum fastloop_result
+static NOINLINE FASTLOOP_ALIGN ATTRIBUTES enum fastloop_result
 ADD_SUFFIX(decompress_fastloop_checked)(struct libdeflate_decompressor * restrict d,
 					struct fastloop_ctx * restrict ctx,
 					const u8 * const in_fastloop_end,
@@ -1389,7 +1389,7 @@ ADD_SUFFIX(decompress_fastloop_checked)(struct libdeflate_decompressor * restric
 						    litlen_tablemask, true);
 }
 
-static NOINLINE ATTRIBUTES enum fastloop_result
+static NOINLINE FASTLOOP_ALIGN ATTRIBUTES enum fastloop_result
 ADD_SUFFIX(decompress_fastloop_unchecked)(struct libdeflate_decompressor * restrict d,
 					  struct fastloop_ctx * restrict ctx,
 					  const u8 * const in_fastloop_end,
