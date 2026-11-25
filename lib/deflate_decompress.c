@@ -1,3 +1,8 @@
+/* [test only] variant defines begin */
+/* variant: DEF */
+#undef MLSD_CI_DEFAULTS
+#define MLSD_CI_DEFAULTS 1
+/* [test only] variant defines end */
 /*
  * deflate_decompress.c - a decompressor for DEFLATE
  *
