@@ -920,11 +920,11 @@ heap_sort(u32 A[], unsigned length)
 
 /*
  * Return true if at most half the symbols are used, as is usual for small
- * blocks.  Then it's faster to first make a list of the used symbols, and to go
- * through just that list in the later loops over the symbols.  The list then
- * fits in the last num_used_syms entries of the 'A' array (see
+ * blocks.  Then it's faster for the later loops over the symbols to go through
+ * just the list of the used symbols that sort_symbols() makes.  The list is in
+ * the last num_used_syms entries of the 'A' array (see
  * deflate_make_huffman_code()), which the sorted symbols and the tree built
- * from them don't use.
+ * from them then don't use.
  */
 static forceinline bool
 few_syms_used(unsigned num_used_syms, unsigned num_syms)
@@ -967,6 +967,7 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 	unsigned num_used_syms;
 	unsigned num_counters;
 	unsigned offset;
+	unsigned pos;
 	u16 counters[GET_NUM_COUNTERS(DEFLATE_MAX_NUM_SYMS)];
 
 	/*
@@ -984,17 +985,35 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 
 	memset(counters, 0, num_counters * sizeof(counters[0]));
 
-	/* Count the frequencies. */
-	for (sym = 0; sym < num_syms; sym++)
-		counters[MIN(freqs[sym], num_counters - 1)]++;
-
-	/* The zero-th counter counted the symbols with zero frequency. */
-	num_used_syms = num_syms - counters[0];
+	/*
+	 * List the used symbols, which also counts them.  Whether each symbol
+	 * is used is hard to predict, so instead of branching on it, store
+	 * every symbol and step past only the used ones.  The list is filled
+	 * from the end, so the stores of the unused symbols below the lowest
+	 * used one go to the entry just before the list, not past the end of
+	 * the array.
+	 */
+	pos = num_syms - 1;
+	sym = num_syms;
+	do {
+		sym--;
+		symout[pos] = sym;
+		pos -= (freqs[sym] != 0);
+	} while (sym != 0);
+	num_used_syms = num_syms - 1 - pos;
 
 	if (few_syms_used(num_used_syms, num_syms)) {
 		const u32 *used = &symout[num_syms - num_used_syms];
-		unsigned last_count = counters[num_counters - 1];
-		unsigned pos = num_syms - 1;
+		unsigned last_count;
+
+		/*
+		 * Count the frequencies of just the used symbols.  Counting all
+		 * of them would mostly increment the zero-th counter, each time
+		 * waiting for the previous increment.
+		 */
+		for (i = 0; i < num_used_syms; i++)
+			counters[MIN(freqs[used[i]], num_counters - 1)]++;
+		last_count = counters[num_counters - 1];
 
 		/*
 		 * Make the counters cumulative, ignoring the zero-th.  Stop
@@ -1019,22 +1038,6 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 		 */
 		memset(lens, 0, num_syms);
 
-		/*
-		 * List the used symbols.  Whether each symbol is used is hard
-		 * to predict, so instead of branching on it, store every symbol
-		 * and step past only the used ones.  The list is filled from
-		 * the end, so the stores of the unused symbols below the lowest
-		 * used one go to the entry just before the list, not past the
-		 * end of the array.
-		 */
-		sym = num_syms;
-		do {
-			sym--;
-			symout[pos] = sym;
-			pos -= (freqs[sym] != 0);
-		} while (sym != 0);
-		ASSERT(pos == num_syms - num_used_syms - 1);
-
 		/* Sort the used symbols using the counters. */
 		for (i = 0; i < num_used_syms; i++) {
 			u32 freq;
@@ -1050,6 +1053,10 @@ sort_symbols(unsigned num_syms, const u32 freqs[], u8 lens[], u32 symout[])
 
 		return num_used_syms;
 	}
+
+	/* Count the frequencies. */
+	for (sym = 0; sym < num_syms; sym++)
+		counters[MIN(freqs[sym], num_counters - 1)]++;
 
 	/*
 	 * Make the counters cumulative, ignoring the zero-th, which counted
