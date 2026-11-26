@@ -1,15 +1,7 @@
 /* [test only] variant defines begin */
-/* variant: ANYPRIO_NOLIT */
-#undef MLSD_TEST_ANY_PRIORITY
-#define MLSD_TEST_ANY_PRIORITY 1
-#undef MLSD_MIN_PREV_OUT
-#define MLSD_MIN_PREV_OUT 4096
-#undef MLSD_MIN_IN_BYTES
-#define MLSD_MIN_IN_BYTES 4096
-#undef MLSD_MIN_OUT_BYTES
-#define MLSD_MIN_OUT_BYTES 32768
-#undef MLSD_MIN_LEN_SPACE
-#define MLSD_MIN_LEN_SPACE 0
+/* variant: PR_NOQOS */
+#undef MLSD_QOS_CHECK
+#define MLSD_QOS_CHECK 0
 /* [test only] variant defines end */
 /*
  * deflate_decompress.c - a decompressor for DEFLATE
@@ -393,22 +385,31 @@ do {									\
 #define COMPOUND_LITLEN_MIN_OUT_BYTES	8192
 
 /*
- * Multi-lane speculative decoding of Huffman blocks, see
- * decompress_multilane.h.  It needs a wide core, so it's enabled only on Apple
- * arm64; define LIBDEFLATE_NO_MLSD to disable it.
+ * Multi-lane speculative decoding of Huffman blocks (see
+ * decompress_multilane.h).  On by default on Apple arm64, where it has been
+ * tuned (define LIBDEFLATE_NO_MLSD to turn it off); elsewhere off unless
+ * LIBDEFLATE_MLSD is defined (experimental: it is slower on narrower cores).
  */
-#if defined(__APPLE__) && defined(ARCH_ARM64) && !defined(FREESTANDING) && \
-	!defined(LIBDEFLATE_NO_MLSD)
-#  define MLSD_ENABLED		1
-#  define MLSD_LANES		4	/* lanes decoded at once */
-#  ifndef MLSD_ROUND_STEPS	/* (can be overridden for testing) */
-#    define MLSD_ROUND_STEPS	256	/* max steps per lane per round */
-#    define MLSD_CATCHUP	64	/* max extra steps to catch up */
+#if !defined(LIBDEFLATE_NO_MLSD) && \
+	(defined(LIBDEFLATE_MLSD) || \
+	 (defined(__APPLE__) && defined(ARCH_ARM64) && !defined(FREESTANDING))) && \
+	(defined(ARCH_ARM64) || defined(ARCH_X86_64))
+#  define MLSD_ENABLED	1
+   /* Number of lanes decoded in parallel */
+#  ifndef MLSD_LANES
+#    define MLSD_LANES		4
 #  endif
-#  define MLSD_NREC		(MLSD_ROUND_STEPS + MLSD_CATCHUP)
-#  define MLSD_TABLEBITS	12	/* litlen main table bits */
+   /* Maximum steps per lane per round (a power of 2) */
+#  ifndef MLSD_MAX_STEPS
+#    define MLSD_MAX_STEPS	512
+#  endif
+   /* Maximum extra serial steps to bring a lane to the next one's boundary */
+#  ifndef MLSD_CATCHUP
+#    define MLSD_CATCHUP	64
+#  endif
+#  define MLSD_NREC		(MLSD_MAX_STEPS + MLSD_CATCHUP)
 #else
-#  define MLSD_ENABLED		0
+#  define MLSD_ENABLED	0
 #endif
 
 /*****************************************************************************
@@ -975,16 +976,6 @@ struct libdeflate_decompressor {
 		} l;
 
 		u32 litlen_decode_table[LITLEN_ENOUGH];
-#if MLSD_ENABLED
-		/* decompress_multilane.h's tables, which keep 'lens' intact */
-		struct {
-			u8 lens[DEFLATE_NUM_LITLEN_SYMS +
-				DEFLATE_NUM_OFFSET_SYMS +
-				DEFLATE_MAX_LENS_OVERRUN];
-			u64 lt[LITLEN_ENOUGH];
-			u64 ot[OFFSET_ENOUGH + 256];
-		} mlsd;
-#endif
 	} u;
 
 	u32 offset_decode_table[OFFSET_ENOUGH];
@@ -996,9 +987,35 @@ struct libdeflate_decompressor {
 	unsigned litlen_tablebits;
 
 #if MLSD_ENABLED
-	/* records and bit positions of the lanes, for 2 rounds */
+	/* decode tables in the format used by decompress_multilane.h */
+	u64 mlsd_litlen_table[LITLEN_ENOUGH];
+	u64 mlsd_offset_table[OFFSET_ENOUGH + 256];
+	unsigned mlsd_litlen_tablebits;
+	unsigned mlsd_copy;
+	bool mlsd_dummy_init;
+	/* state of the adaptive gating, carried across blocks and streams */
+	u32 mlsd_skip;		/* blocks to skip after a loss (backoff) */
+	u32 mlsd_skip_left;	/* blocks left to skip */
+	u32 mlsd_lt;		/* running averages of the lanes' and the */
+	u32 mlsd_ft;		/* ... fastloop's time per MiB of output, */
+	u32 mlsd_ovh;		/* ... and of the lanes' extra time per block */
+	u32 mlsd_bmin;		/* smallest block (output bytes) that the
+				   lanes are expected to win on */
+	u32 mlsd_countdown;	/* output bytes until the next comparison */
+	u32 mlsd_period;	/* output bytes between comparisons */
+	u32 mlsd_evals;		/* number of measured comparisons so far */
+	u32 mlsd_attempts;	/* number of comparisons attempted */
+	u32 mlsd_bpb;		/* input bits per output byte, times 64, of
+				   the data compared (running average) */
+	bool mlsd_lanes_on;	/* use the lanes (between comparisons)? */
+	bool mlsd_stream_eval;	/* next comparison is a stream's first */
+#ifdef MLSD_TEST_RANDOM_MODE
+	u32 mlsd_test_rng;	/* testing: choose the mode at random */
+#endif
+	/* work area of decompress_multilane() */
 	u64 mlsd_recs[2][MLSD_LANES][MLSD_NREC];
 	u16 mlsd_poss[2][MLSD_LANES][MLSD_NREC + 1];
+	u64 mlsd_xr[MLSD_LANES * MLSD_NREC];
 #endif
 
 	/* The free() function for this struct, chosen at allocation time */
