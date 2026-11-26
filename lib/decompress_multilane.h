@@ -60,10 +60,7 @@
  * Blocks use the lanes only if at least MLSD_MIN_IN_BYTES of input remain and
  * MLSD_MIN_OUT_BYTES of output space, the previous block produced at least
  * MLSD_MIN_PREV_OUT bytes, and the length codewords take at least 1/8 of the
- * codespace (the fastloop does better on runs of literals), or 1/4 if the
- * literal codewords average more than MLSD_MAX_LIT_BITS bits.  Two-literal
- * table entries are rare in such blocks (e.g. poorly compressible data), and
- * on an M1 they were up to 20% slower with the lanes.
+ * codespace (the fastloop does better on runs of literals).
  */
 #ifndef MLSD_MIN_PREV_OUT
 #  define MLSD_MIN_IN_BYTES	4096
@@ -71,7 +68,6 @@
 #  define MLSD_MIN_PREV_OUT	4096
 #  define MLSD_MIN_LEN_SPACE	(1U << (DEFLATE_MAX_CODEWORD_LEN - 3))
 #endif
-#define MLSD_MAX_LIT_BITS	6
 
 #ifndef MLSD_SHARED_DEFINED
 #define MLSD_SHARED_DEFINED
@@ -251,26 +247,16 @@ ADD_SUFFIX(mlsd_build_tables)(struct libdeflate_decompressor * restrict d,
 			      unsigned num_offset_syms)
 {
 	const u8 *lens = d->u.l.lens;
-	u32 len_space = 0, lit_space = 0, lit_bits = 0;
+	u32 len_space = 0;
 	unsigned i;
 
 	/* (d->u.mlsd.lt[] has LITLEN_ENOUGH entries) */
 	STATIC_ASSERT(MLSD_TABLEBITS == LITLEN_TABLEBITS);
-	for (i = 0; i < DEFLATE_NUM_LITERALS; i++) {
-		if (lens[i] != 0) {
-			const u32 w = (1U << 15) >> lens[i];
-
-			lit_space += w;
-			lit_bits += w * lens[i];
-		}
-	}
 	for (i = DEFLATE_FIRST_LEN_SYM; i < num_litlen_syms; i++) {
 		if (lens[i] != 0)
 			len_space += (1U << 15) >> lens[i];
 	}
-	if (len_space < MLSD_MIN_LEN_SPACE ||
-	    (len_space < 2 * MLSD_MIN_LEN_SPACE &&
-	     lit_bits > MLSD_MAX_LIT_BITS * lit_space))
+	if (len_space < MLSD_MIN_LEN_SPACE)
 		return false;
 	for (i = 1U << OFFSET_TABLEBITS; i < 2U << OFFSET_TABLEBITS; i++)
 		d->u.mlsd.ot[i] = (u64)MLSD_DUMMY_OFF << 32;
