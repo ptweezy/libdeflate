@@ -379,6 +379,25 @@ do {									\
  */
 #define COMPOUND_LITLEN_MIN_OUT_BYTES	8192
 
+/*
+ * Multi-lane speculative decoding of Huffman blocks, see
+ * decompress_multilane.h.  It needs a wide core, so it's enabled only on Apple
+ * arm64; define LIBDEFLATE_NO_MLSD to disable it.
+ */
+#if defined(__APPLE__) && defined(ARCH_ARM64) && !defined(FREESTANDING) && \
+	!defined(LIBDEFLATE_NO_MLSD)
+#  define MLSD_ENABLED		1
+#  define MLSD_LANES		4	/* lanes decoded at once */
+#  ifndef MLSD_ROUND_STEPS	/* (can be overridden for testing) */
+#    define MLSD_ROUND_STEPS	256	/* max steps per lane per round */
+#    define MLSD_CATCHUP	64	/* max extra steps to catch up */
+#  endif
+#  define MLSD_NREC		(MLSD_ROUND_STEPS + MLSD_CATCHUP)
+#  define MLSD_TABLEBITS	12	/* litlen main table bits */
+#else
+#  define MLSD_ENABLED		0
+#endif
+
 /*****************************************************************************
  *                              Huffman decoding                             *
  *****************************************************************************/
@@ -943,6 +962,16 @@ struct libdeflate_decompressor {
 		} l;
 
 		u32 litlen_decode_table[LITLEN_ENOUGH];
+#if MLSD_ENABLED
+		/* decompress_multilane.h's tables, which keep 'lens' intact */
+		struct {
+			u8 lens[DEFLATE_NUM_LITLEN_SYMS +
+				DEFLATE_NUM_OFFSET_SYMS +
+				DEFLATE_MAX_LENS_OVERRUN];
+			u64 lt[LITLEN_ENOUGH];
+			u64 ot[OFFSET_ENOUGH + 256];
+		} mlsd;
+#endif
 	} u;
 
 	u32 offset_decode_table[OFFSET_ENOUGH];
@@ -952,6 +981,12 @@ struct libdeflate_decompressor {
 
 	bool static_codes_loaded;
 	unsigned litlen_tablebits;
+
+#if MLSD_ENABLED
+	/* records and bit positions of the lanes, for 2 rounds */
+	u64 mlsd_recs[2][MLSD_LANES][MLSD_NREC];
+	u16 mlsd_poss[2][MLSD_LANES][MLSD_NREC + 1];
+#endif
 
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
@@ -986,6 +1021,98 @@ enum fastloop_result {
 	FASTLOOP_BLOCK_DONE,
 	FASTLOOP_BAD_DATA,
 };
+
+#ifdef MLSD_DIAG
+/*
+ * [test only] Per-block log: Huffman code statistics and decode time, for
+ * designing the multi-lane gates.  Not thread-safe.
+ */
+#include <mach/mach_time.h>
+struct mlsd_diag_rec {
+	u32 type, len_space, lit_avg100, lit_short1000, bpb100, out_bytes;
+	u64 ticks;
+};
+struct mlsd_diag_rec mlsd_diag_log[1 << 18];
+unsigned long mlsd_diag_n;
+static u64 mlsd_diag_t0;
+static const u8 *mlsd_diag_o0;
+static int mlsd_diag_active;
+static const u16 mlsd_diag_lbase[29] = {
+	3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+	35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 };
+static const u8 mlsd_diag_lextra[29] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+	3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
+
+static void
+mlsd_diag_start(const u8 *lens, unsigned nl, unsigned no, unsigned type,
+		const u8 *out_next)
+{
+	struct mlsd_diag_rec *r = &mlsd_diag_log[mlsd_diag_n &
+					((1 << 18) - 1)];
+	double wl = 0, wlen = 0, wshort = 0, lsp = 0, wo = 0, wobits = 0;
+	double bits = 0, bytes = 0, eoff;
+	unsigned i;
+
+	for (i = 0; i < 256; i++) {
+		if (lens[i]) {
+			double w = (double)(1U << 15) / (1U << lens[i]);
+
+			wl += w;
+			wlen += w * lens[i];
+			if (lens[i] <= 6)
+				wshort += w;
+		}
+	}
+	for (i = 0; i < no && i < 30; i++) {
+		if (lens[nl + i]) {
+			double w = (double)(1U << 15) / (1U << lens[nl + i]);
+			unsigned extra = i < 4 ? 0 : (i - 2) / 2;
+
+			wo += w;
+			wobits += w * (lens[nl + i] + extra);
+		}
+	}
+	eoff = wo ? wobits / wo : 0;
+	bits = wlen;
+	bytes = wl;
+	for (i = 257; i < nl && i < 286; i++) {
+		if (lens[i]) {
+			double w = (double)(1U << 15) / (1U << lens[i]);
+			unsigned j = i - 257, x = mlsd_diag_lextra[j];
+
+			lsp += w;
+			bits += w * (lens[i] + x + eoff);
+			bytes += w * (mlsd_diag_lbase[j] +
+				      ((1U << x) - 1) / 2.0);
+		}
+	}
+	r->type = type;
+	r->len_space = (u32)lsp;
+	r->lit_avg100 = wl ? (u32)(wlen * 100 / wl) : 0;
+	r->lit_short1000 = wl ? (u32)(wshort * 1000 / wl) : 0;
+	r->bpb100 = bytes ? (u32)(bits * 100 / bytes) : 0;
+	mlsd_diag_o0 = out_next;
+	mlsd_diag_active = 1;
+	mlsd_diag_t0 = mach_absolute_time();
+}
+
+static void
+mlsd_diag_end(const u8 *out_next)
+{
+	u64 t = mach_absolute_time();
+
+	if (mlsd_diag_active) {
+		struct mlsd_diag_rec *r = &mlsd_diag_log[mlsd_diag_n &
+						((1 << 18) - 1)];
+
+		r->ticks = t - mlsd_diag_t0;
+		r->out_bytes = (u32)(out_next - mlsd_diag_o0);
+		mlsd_diag_n++;
+		mlsd_diag_active = 0;
+	}
+}
+#endif /* MLSD_DIAG */
 
 /* Include architecture-specific implementation(s) if available. */
 #undef DEFAULT_IMPL
