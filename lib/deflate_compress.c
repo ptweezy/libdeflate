@@ -1988,9 +1988,13 @@ run_extended:
  * immediately precede the compressed codeword lengths of the larger code.
  */
 
-/* Precompute the information needed to output dynamic Huffman codes. */
+/*
+ * Precompute the information needed to output dynamic Huffman codes, and if
+ * @for_output, also the full length codewords for outputting the block.
+ */
 static void
-deflate_precompute_huffman_header(struct libdeflate_compressor *c)
+deflate_precompute_huffman_header(struct libdeflate_compressor *c,
+				  bool for_output)
 {
 	/* Compute how many litlen and offset symbols are needed. */
 
@@ -2051,7 +2055,8 @@ deflate_precompute_huffman_header(struct libdeflate_compressor *c)
 			c->o.precode.num_offset_syms);
 	}
 
-	deflate_compute_full_len_codewords(&c->codes);
+	if (for_output)
+		deflate_compute_full_len_codewords(&c->codes);
 }
 
 /* Write a match to the output buffer. */
@@ -2141,7 +2146,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	ASSERT(!os->overflow);
 
 	/* Precompute the precode items and build the precode. */
-	deflate_precompute_huffman_header(c);
+	deflate_precompute_huffman_header(c, true);
 
 	/* Account for the cost of encoding dynamic Huffman codes. */
 	dynamic_cost += 5 + 5 + 4 + (3 * c->o.precode.num_explicit_lens);
@@ -3357,7 +3362,7 @@ deflate_compute_true_cost(struct libdeflate_compressor *c)
 	u32 cost = 0;
 	unsigned sym;
 
-	deflate_precompute_huffman_header(c);
+	deflate_precompute_huffman_header(c, false);
 
 	memset(&c->codes.lens.litlen[c->o.precode.num_litlen_syms], 0,
 	       DEFLATE_NUM_LITLEN_SYMS - c->o.precode.num_litlen_syms);
