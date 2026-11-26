@@ -1186,9 +1186,7 @@ build_tree(u32 A[], unsigned sym_count)
  *	The array produced by build_tree(), containing parent index information
  *	for the non-leaf nodes of the Huffman tree.  Each entry in this array is
  *	a node; a node's parent always has a greater index than that node
- *	itself.  This function will overwrite the parent index information in
- *	this array, so essentially it will destroy the tree.  However, the data
- *	in the low NUM_SYMBOL_BITS of each entry will be preserved.
+ *	itself.
  *
  * @root_idx
  *	The 0-based index of the root node in 'A', and consequently one less
@@ -1203,11 +1201,12 @@ build_tree(u32 A[], unsigned sym_count)
  *	The maximum permissible codeword length.
  */
 static void
-compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
+compute_length_counts(const u32 A[], unsigned root_idx, unsigned len_counts[],
 		      unsigned max_codeword_len)
 {
 	unsigned first_node[DEFLATE_MAX_CODEWORD_LEN] = { 0 };
 	unsigned num_parents;
+	unsigned depth;
 	unsigned len;
 	int node;
 
@@ -1216,8 +1215,7 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 *
 	 * (1) We can traverse the non-leaf nodes of the tree, always visiting a
 	 *     parent before its children, by simply iterating through the array
-	 *     in reverse order.  Consequently, we can compute the depth of each
-	 *     node in one pass, overwriting the parent indices with depths.
+	 *     in reverse order.
 	 *
 	 * (2) We can initially assume that in the real Huffman tree, both
 	 *     children of the root are leaves.  This corresponds to two
@@ -1236,37 +1234,21 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 *     them, so a node's parent never has a lower index than the parent
 	 *     of a lower-indexed node.  Therefore the depths are nondecreasing
 	 *     in the traversal order, and the nodes at each depth have
-	 *     consecutive indices.  So for the nodes shallower than
-	 *     max_codeword_len, which come first, the number at each depth
-	 *     follows from the lowest index at each depth ('first_node').  That
-	 *     avoids incrementing counters in memory, which would be slow since
+	 *     consecutive indices.  So a node is one deeper than the previous
+	 *     one exactly when its parent is below the lowest node at the
+	 *     previous one's parent depth ('first_node'), and for the nodes
+	 *     shallower than max_codeword_len, which come first, the number at
+	 *     each depth follows from 'first_node'.  That avoids storing depths
+	 *     and incrementing counters in memory, which would be slow since
 	 *     successive nodes often have the same depth.
 	 */
 
-	/* Set the root node's depth to 0. */
-	A[root_idx] &= SYMBOL_MASK;
 	first_node[0] = root_idx;
-
+	depth = 1;
 	for (node = root_idx - 1; node >= 0; node--) {
-
-		/* Calculate the depth of this node. */
-
-		unsigned parent = A[node] >> NUM_SYMBOL_BITS;
-		unsigned parent_depth = A[parent] >> NUM_SYMBOL_BITS;
-		unsigned depth = parent_depth + 1;
-
-		/* See observation (4). */
-		ASSERT(depth >= (A[node + 1] >> NUM_SYMBOL_BITS));
-
-		if (depth >= max_codeword_len)
+		if ((A[node] >> NUM_SYMBOL_BITS) < first_node[depth - 1] &&
+		    ++depth >= max_codeword_len)
 			break;
-
-		/*
-		 * Set the depth of this node so that it is available when its
-		 * children (if any) are processed.
-		 */
-		A[node] = (A[node] & SYMBOL_MASK) | (depth << NUM_SYMBOL_BITS);
-
 		first_node[depth] = node;
 	}
 
@@ -1295,8 +1277,7 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 * should be good enough.
 	 */
 	for (; node >= 0; node--) {
-		unsigned depth = max_codeword_len;
-
+		depth = max_codeword_len;
 		do {
 			depth--;
 		} while (len_counts[depth] == 0);
@@ -1929,21 +1910,33 @@ static void
 deflate_compute_full_len_codewords(struct libdeflate_compressor *c,
 				   const struct deflate_codes *codes)
 {
-	u32 len;
+	unsigned slot;
 
 	STATIC_ASSERT(MAX_LITLEN_CODEWORD_LEN +
 		      DEFLATE_MAX_EXTRA_LENGTH_BITS <= 32);
 
-	for (len = DEFLATE_MIN_MATCH_LEN; len <= DEFLATE_MAX_MATCH_LEN; len++) {
-		unsigned slot = deflate_length_slot[len];
+	/*
+	 * Only the lengths whose symbols are used are needed, and small blocks
+	 * use few.  Length 258, the last slot's, is also in the range of the
+	 * slot before it, so the slots go in increasing order.
+	 */
+	for (slot = 0; slot < ARRAY_LEN(deflate_length_slot_base); slot++) {
 		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
-		u32 extra_bits = len - deflate_length_slot_base[slot];
+		u32 codeword = codes->codewords.litlen[litlen_sym];
+		unsigned len = codes->lens.litlen[litlen_sym];
+		unsigned num_extra_bits = deflate_extra_length_bits[slot];
+		u32 base = deflate_length_slot_base[slot];
+		u32 extra_bits;
 
-		c->o.length.codewords[len] =
-			codes->codewords.litlen[litlen_sym] |
-			(extra_bits << codes->lens.litlen[litlen_sym]);
-		c->o.length.lens[len] = codes->lens.litlen[litlen_sym] +
-					deflate_extra_length_bits[slot];
+		if (len == 0)
+			continue;
+		for (extra_bits = 0; extra_bits < (1U << num_extra_bits);
+		     extra_bits++) {
+			c->o.length.codewords[base + extra_bits] =
+				codeword | (extra_bits << len);
+			c->o.length.lens[base + extra_bits] =
+				len + num_extra_bits;
+		}
 	}
 }
 
@@ -4460,7 +4453,7 @@ libdeflate_alloc_compressor_ex(int compression_level,
 
 	/*
 	 * deflate_make_huffman_code() may leave the codewords of unused symbols
-	 * unset, and deflate_compute_full_len_codewords() reads those of the
+	 * unset, and deflate_compute_full_len_codewords() can read those of the
 	 * length symbols.
 	 */
 	memset(&c->codes.codewords, 0, sizeof(c->codes.codewords));
