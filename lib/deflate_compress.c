@@ -573,7 +573,7 @@ struct libdeflate_compressor {
 	/* The static Huffman codes defined by the DEFLATE format */
 	struct deflate_codes static_codes;
 
-	/* The full length codewords of 'codes' */
+	/* The full length codewords of the codes of the current block */
 	struct deflate_full_len_codewords full_len;
 
 	/* Temporary space for block flushing */
@@ -590,11 +590,6 @@ struct libdeflate_compressor {
 			unsigned num_explicit_lens;
 			unsigned num_items;
 		} precode;
-		/*
-		 * The full length codewords of 'static_codes', for a static
-		 * block, which doesn't need the information in 'precode'
-		 */
-		struct deflate_full_len_codewords static_full_len;
 	} o;
 
 	union {
@@ -1738,6 +1733,26 @@ deflate_compute_full_len_codewords(const struct deflate_codes *codes,
 	}
 }
 
+/* Compute the full length codewords of all lengths, as static blocks need. */
+static void
+deflate_compute_all_full_len_codewords(const struct deflate_codes *codes,
+				       struct deflate_full_len_codewords *flc)
+{
+	u32 len;
+
+	for (len = DEFLATE_MIN_MATCH_LEN; len <= DEFLATE_MAX_MATCH_LEN; len++) {
+		unsigned slot = deflate_length_slot[len];
+		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
+		u32 extra_bits = len - deflate_length_slot_base[slot];
+
+		flc->codewords[len] =
+			codes->codewords.litlen[litlen_sym] |
+			(extra_bits << codes->lens.litlen[litlen_sym]);
+		flc->lens[len] = codes->lens.litlen[litlen_sym] +
+				 deflate_extra_length_bits[slot];
+	}
+}
+
 /*
  * Build the literal/length and offset Huffman codes for a DEFLATE block.
  *
@@ -2078,9 +2093,9 @@ deflate_precompute_huffman_header(struct libdeflate_compressor *c,
 }
 
 /* Write a match to the output buffer. */
-#define WRITE_MATCH(flc_, codes_, length_, offset_, offset_slot_)	\
+#define WRITE_MATCH(c_, codes_, length_, offset_, offset_slot_)		\
 do {									\
-	const struct deflate_full_len_codewords *flc__ = (flc_);	\
+	const struct libdeflate_compressor *c__ = (c_);			\
 	const struct deflate_codes *codes__ = (codes_);			\
 	u32 length__ = (length_);					\
 	u32 offset__ = (offset_);					\
@@ -2089,7 +2104,8 @@ do {									\
 	/* Litlen symbol and extra length bits */			\
 	STATIC_ASSERT(CAN_BUFFER(MAX_LITLEN_CODEWORD_LEN +		\
 				 DEFLATE_MAX_EXTRA_LENGTH_BITS));	\
-	ADD_BITS(flc__->codewords[length__], flc__->lens[length__]);	\
+	ADD_BITS(c__->full_len.codewords[length__],			\
+		 c__->full_len.lens[length__]);				\
 									\
 	if (!CAN_BUFFER(MAX_LITLEN_CODEWORD_LEN +			\
 			DEFLATE_MAX_EXTRA_LENGTH_BITS +			\
@@ -2153,7 +2169,6 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	u32 uncompressed_cost = 3;
 	u32 best_cost;
 	struct deflate_codes *codes;
-	const struct deflate_full_len_codewords *flc;
 	unsigned sym;
 
 	ASSERT(block_length >= MIN_BLOCK_LENGTH ||
@@ -2281,8 +2296,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	if (best_cost == static_cost) {
 		/* Static Huffman block */
 		codes = &c->static_codes;
-		deflate_compute_full_len_codewords(codes, &c->o.static_full_len);
-		flc = &c->o.static_full_len;
+		deflate_compute_all_full_len_codewords(codes, &c->full_len);
 		ADD_BITS(is_final_block, 1);
 		ADD_BITS(DEFLATE_BLOCKTYPE_STATIC_HUFFMAN, 2);
 		FLUSH_BITS();
@@ -2295,7 +2309,6 @@ deflate_flush_block(struct libdeflate_compressor *c,
 		/* Dynamic Huffman block */
 
 		codes = &c->codes;
-		flc = &c->full_len;
 		STATIC_ASSERT(CAN_BUFFER(1 + 2 + 5 + 5 + 4 + 3));
 		ADD_BITS(is_final_block, 1);
 		ADD_BITS(DEFLATE_BLOCKTYPE_DYNAMIC_HUFFMAN, 2);
@@ -2396,7 +2409,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 			/* Match */
 			length = item >> OPTIMUM_LEN_SHIFT;
 			offset = item & OPTIMUM_OFFSET_MASK;
-			WRITE_MATCH(flc, codes, length, offset,
+			WRITE_MATCH(c, codes, length, offset,
 				    c->p.n.offset_slot_full[offset]);
 			i += length;
 		}
@@ -2415,7 +2428,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 				u32 length = item >> OPTIMUM_LEN_SHIFT;
 				u32 offset = item & OPTIMUM_OFFSET_MASK;
 
-				WRITE_MATCH(flc, codes, length, offset,
+				WRITE_MATCH(c, codes, length, offset,
 					    c->p.n.offset_slot_full[offset]);
 				i += length;
 			}
@@ -2482,7 +2495,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 			}
 
 			/* Output a match. */
-			WRITE_MATCH(flc, codes, length, seq->offset,
+			WRITE_MATCH(c, codes, length, seq->offset,
 				    seq->offset_slot);
 			in_next += length;
 		}
