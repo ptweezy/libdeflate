@@ -1416,7 +1416,7 @@ gen_lens(const u32 A[], u8 lens[], const unsigned len_counts[],
  *	the last num_used_syms entries of 'A' must initially list these
  *	symbols in increasing order, and only they get codewords.
  */
-static void
+static forceinline void
 gen_codewords(u32 A[], const u8 lens[], const unsigned len_counts[],
 	      unsigned max_codeword_len, unsigned num_syms,
 	      unsigned num_used_syms)
@@ -1575,7 +1575,7 @@ gen_codewords(u32 A[], const u8 lens[], const unsigned len_counts[],
  * Many of these optimizations are based on the implementation in 7-Zip (source
  * file: C/HuffEnc.c), which was placed in the public domain by Igor Pavlov.
  */
-static unsigned
+static forceinline unsigned
 deflate_make_huffman_lens(unsigned num_syms, unsigned max_codeword_len,
 			  const u32 freqs[], u8 lens[], u32 codewords[],
 			  unsigned len_counts[])
@@ -1655,7 +1655,7 @@ deflate_make_huffman_lens(unsigned num_syms, unsigned max_codeword_len,
  * deflate_make_huffman_lens() computed.  @len_counts and @num_used_syms are
  * what it returned, and @codewords must be unchanged since.
  */
-static void
+static forceinline void
 deflate_gen_huffman_codewords(unsigned num_syms, unsigned max_codeword_len,
 			      const u8 lens[], u32 codewords[],
 			      const unsigned len_counts[],
