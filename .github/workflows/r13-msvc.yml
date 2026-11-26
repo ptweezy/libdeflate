@@ -1,0 +1,114 @@
+name: r13-msvc
+# Test-only: interleaved MSVC timing of fixed commits on hosted Windows
+# runners (scripts/r8_time/msab.py).  Not for upstream.
+on:
+  push:
+    branches: ['r13-msvc*']
+permissions:
+  contents: read
+concurrency:
+  group: r13-msvc-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # name ref pairs: m0 = upstream master (aa5181e), f1-f5 = PR 478's commits.
+  # The library is built with CMake, as a user builds it (Release = /O2,
+  # MinSizeRel = /O1), and msbench is linked against the static library.
+  REFS: m0 aa5181e f1 596b1bb f2 03071b7 f3 6a20fde f4 0b38821 f5 050065a
+  NAMES: m0,f1,f2,f3,f4,f5
+  EXPECT: m0:x,f1:x,f2:x,f3:x,f4:x,f5:x
+  PAIRS: m0:f1,f1:f2,f2:f3,f3:f4,f4:f5,m0:f2,f2:f5,m0:f5
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: |
+        bash scripts/r8_time/inputs.sh "$RUNNER_TEMP/r8in"
+        # s256: the first 256 KiB of each real slice (the /O1 whole-input cells)
+        mkdir -p "$RUNNER_TEMP/r8in/s256"
+        for f in "$RUNNER_TEMP"/r8in/real/*; do
+          head -c 262144 "$f" > "$RUNNER_TEMP/r8in/s256/$(basename "$f")"
+        done
+    - uses: actions/upload-artifact@v7
+      with:
+        name: r13-inputs
+        path: ${{ runner.temp }}/r8in
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        # real, syn: CMake Release (/O2); o1, o1syn: CMake MinSizeRel (/O1).
+        arch: [x64, x86]
+        set: [real, syn, o1, o1syn]
+        shard: [1, 2, 3, 4]
+    name: ${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+    runs-on: windows-2025
+    timeout-minutes: 200
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 24
+    - uses: actions/download-artifact@v8
+      with:
+        name: r13-inputs
+        path: ${{ runner.temp }}/r8in
+    - name: Build
+      shell: cmd
+      env:
+        MSB_CONFIG: ${{ startsWith(matrix.set, 'o1') && 'MinSizeRel' || 'Release' }}
+      run: call scripts\r8_time\msbuildcm.bat ${{ matrix.arch }} "%RUNNER_TEMP%\msb" %REFS%
+    - name: Time
+      shell: bash
+      env:
+        MSB_CPU: 2
+        MSAB_FRESH: 1
+        SET: ${{ matrix.set }}
+      run: |
+        IN=$(cygpath -m "$RUNNER_TEMP/r8in")
+        BIN=$(cygpath -m "$RUNNER_TEMP/msb")
+        mkdir -p res
+        powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors" | tr '\r\n' '  ' > res/cpu.txt
+        cat res/cpu.txt; echo
+        python scripts/r8_time/mslayout.py "$BIN" "$EXPECT" | tee res/layout.txt
+        test "${PIPESTATUS[0]}" = 0
+        cp "$BIN"/*.map "$BIN"/*.buildlog res/
+        if [ "${{ matrix.shard }}" = 1 ]; then cp "$BIN"/*.dis res/; fi
+        SYN="$IN/syn/* $IN/adv/* $IN/z3/alt128 $IN/z3/pre40 $IN/z3/pre70 $IN/z3/pre100 $IN/z3/pre120"
+        case $SET in
+        real)  FILES="$IN/real/*"; CFGS=1:333,1:1024,1:4096,6:1024,12:1024 ;;
+        syn)   FILES=$SYN;         CFGS=1:1024,1:4096,6:1024,12:1024 ;;
+        o1)    FILES="$IN/s256/*"; CFGS=1:0,6:0,12:0,d6:0 ;;
+        o1syn) FILES=$SYN;         CFGS=1:1024,1:4096,6:1024 ;;
+        esac
+        python scripts/r8_time/msab.py "$BIN" 16 3 res/res.tsv "$NAMES" "$CFGS" -- $FILES
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-msvc-${{ matrix.arch }}-${{ matrix.set }}-${{ matrix.shard }}
+        path: res
+        if-no-files-found: warn
+  aggregate:
+    needs: time
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: r13-msvc-*
+        path: res
+    - name: Aggregate
+      run: |
+        python3 scripts/r8_time/msagg.py res "$PAIRS" | tee summary.md
+        cat summary.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r13-msvc-summary
+        path: summary.md
