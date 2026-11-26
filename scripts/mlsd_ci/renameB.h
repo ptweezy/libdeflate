@@ -1,0 +1,5 @@
+#define libdeflate_deflate_decompress_ex B_deflate_decompress_ex
+#define libdeflate_deflate_decompress B_deflate_decompress
+#define libdeflate_alloc_decompressor_ex B_alloc_decompressor_ex
+#define libdeflate_alloc_decompressor B_alloc_decompressor
+#define libdeflate_free_decompressor B_free_decompressor
