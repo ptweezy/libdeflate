@@ -1733,26 +1733,6 @@ deflate_compute_full_len_codewords(const struct deflate_codes *codes,
 	}
 }
 
-/* Compute the full length codewords of all lengths, as static blocks need. */
-static void
-deflate_compute_all_full_len_codewords(const struct deflate_codes *codes,
-				       struct deflate_full_len_codewords *flc)
-{
-	u32 len;
-
-	for (len = DEFLATE_MIN_MATCH_LEN; len <= DEFLATE_MAX_MATCH_LEN; len++) {
-		unsigned slot = deflate_length_slot[len];
-		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
-		u32 extra_bits = len - deflate_length_slot_base[slot];
-
-		flc->codewords[len] =
-			codes->codewords.litlen[litlen_sym] |
-			(extra_bits << codes->lens.litlen[litlen_sym]);
-		flc->lens[len] = codes->lens.litlen[litlen_sym] +
-				 deflate_extra_length_bits[slot];
-	}
-}
-
 /*
  * Build the literal/length and offset Huffman codes for a DEFLATE block.
  *
@@ -2296,7 +2276,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	if (best_cost == static_cost) {
 		/* Static Huffman block */
 		codes = &c->static_codes;
-		deflate_compute_all_full_len_codewords(codes, &c->full_len);
+		deflate_compute_full_len_codewords(codes, &c->full_len);
 		ADD_BITS(is_final_block, 1);
 		ADD_BITS(DEFLATE_BLOCKTYPE_STATIC_HUFFMAN, 2);
 		FLUSH_BITS();
