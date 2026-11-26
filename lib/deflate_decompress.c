@@ -1,5 +1,5 @@
 /* [test only] variant defines begin */
-/* variant: MINI3V3_ANYPRIO */
+/* variant: MINI3V2_ANYPRIO */
 #undef MLSD_TEST_ANY_PRIORITY
 #define MLSD_TEST_ANY_PRIORITY 1
 /* [test only] variant defines end */

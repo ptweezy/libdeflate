@@ -342,8 +342,9 @@ do {									\
 
 /*
  * In mlsd_run(): execute up to 'r' records of the current range, unless 'out'
- * is past 'out_limit'.  A match takes one MLSD_COPY64() if it's no longer than
- * 64 bytes or its offset (so that it doesn't overlap itself).
+ * is past 'out_limit'.  A match of up to 64 bytes takes one MLSD_COPY64(), as
+ * long as it doesn't overlap itself (offset >= 16, or no longer than the
+ * offset).  Bits 36-47 of a record are bits 4-15 of its offset.
  */
 #define MLSD_EXEC_SOME()						\
 do {									\
@@ -360,7 +361,7 @@ do {									\
 		put_unaligned_le16((u16)x, out);			\
 		out += (x >> 16) & 3;					\
 		src = out - off;					\
-		if (likely(len <= 64 && len <= off)) {			\
+		if (likely(len <= ((x & ((u64)0xFFF << 36)) ? 64 : off))) { \
 			MLSD_COPY64(out, src);				\
 		} else if (len == MLSD_EOB_LEN) {			\
 			goto out;					\
