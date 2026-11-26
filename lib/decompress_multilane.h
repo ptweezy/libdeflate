@@ -21,11 +21,9 @@
  * the lanes are bound by ALU throughput, the execution by stores.
  *
  * The lanes use their own decode tables, built from the codeword lengths, with
- * 64-bit entries that hold the record bits ready to be added up.  The tables
- * and the records are kept at the end of the output buffer, which the lanes
- * stop short of (struct mlsd_scratch), so they need no memory of their own.
- * Litlen entries (with compound entries for a literal followed by a literal or
- * a length whose codewords fit in the main table, like the normal table):
+ * 64-bit entries that hold the record bits ready to be added up.  Litlen
+ * entries (with compound entries for a literal followed by a literal or a
+ * length whose codewords fit in the main table, like the normal table):
  *
  *	Bit 63:     1 if EOB, or if the match length can exceed MLSD_COPY
  *	Bit 58-32:  bits 26-0 of the record, or the subtable start index
@@ -59,19 +57,15 @@
 #define MLSD_MAX_STEP_BITS	(LENGTH_MAXBITS + OFFSET_MAXBITS)
 #define MLSD_MAX_REC_OUT	(2 + DEFLATE_MAX_MATCH_LEN)
 /*
- * Blocks use the lanes only if the output buffer has at least
- * MLSD_MIN_BUF_BYTES (below that, the lanes would stop too soon to pay for
- * themselves on highly compressible data), at least MLSD_MIN_IN_BYTES of input
- * remain and MLSD_MIN_OUT_BYTES of output space before the scratch, the
- * previous block produced at least MLSD_MIN_PREV_OUT bytes, and the length
- * codewords take at least 1/8 of the codespace (the fastloop does better on
- * runs of literals), or 1/4 if the literal codewords average more than
- * MLSD_MAX_LIT_BITS bits.  Two-literal table entries are rare in such blocks
- * (e.g. poorly compressible data), and on an M1 they were up to 20% slower
- * with the lanes.
+ * Blocks use the lanes only if at least MLSD_MIN_IN_BYTES of input remain and
+ * MLSD_MIN_OUT_BYTES of output space, the previous block produced at least
+ * MLSD_MIN_PREV_OUT bytes, and the length codewords take at least 1/8 of the
+ * codespace (the fastloop does better on runs of literals), or 1/4 if the
+ * literal codewords average more than MLSD_MAX_LIT_BITS bits.  Two-literal
+ * table entries are rare in such blocks (e.g. poorly compressible data), and
+ * on an M1 they were up to 20% slower with the lanes.
  */
 #ifndef MLSD_MIN_PREV_OUT
-#  define MLSD_MIN_BUF_BYTES	524288
 #  define MLSD_MIN_IN_BYTES	4096
 #  define MLSD_MIN_OUT_BYTES	32768
 #  define MLSD_MIN_PREV_OUT	4096
@@ -248,20 +242,19 @@ ADD_SUFFIX(mlsd_build_table)(u64 * restrict t, const u8 * restrict lens,
 }
 
 /*
- * Build the lanes' tables in 's' from the codeword lengths 'lens', or return
+ * Build the lanes' tables from d->u.l.lens (leaving them intact), or return
  * false if the lanes shouldn't or can't be used for this block.
  */
 static NOINLINE ATTRIBUTES bool
 ADD_SUFFIX(mlsd_build_tables)(struct libdeflate_decompressor * restrict d,
-			      struct mlsd_scratch * restrict s,
-			      const u8 *lens,
 			      unsigned num_litlen_syms,
 			      unsigned num_offset_syms)
 {
+	const u8 *lens = d->u.l.lens;
 	u32 len_space = 0, lit_space = 0, lit_bits = 0;
 	unsigned i;
 
-	/* (s->lt[] has LITLEN_ENOUGH entries) */
+	/* (d->u.mlsd.lt[] has LITLEN_ENOUGH entries) */
 	STATIC_ASSERT(MLSD_TABLEBITS == LITLEN_TABLEBITS);
 	for (i = 0; i < DEFLATE_NUM_LITERALS; i++) {
 		if (lens[i] != 0) {
@@ -280,13 +273,13 @@ ADD_SUFFIX(mlsd_build_tables)(struct libdeflate_decompressor * restrict d,
 	     lit_bits > MLSD_MAX_LIT_BITS * lit_space))
 		return false;
 	for (i = 1U << OFFSET_TABLEBITS; i < 2U << OFFSET_TABLEBITS; i++)
-		s->ot[i] = (u64)MLSD_DUMMY_OFF << 32;
-	return ADD_SUFFIX(mlsd_build_table)(s->ot,
+		d->u.mlsd.ot[i] = (u64)MLSD_DUMMY_OFF << 32;
+	return ADD_SUFFIX(mlsd_build_table)(d->u.mlsd.ot,
 					    lens + num_litlen_syms,
 					    num_offset_syms, OFFSET_TABLEBITS,
 					    2U << OFFSET_TABLEBITS, false,
 					    d->sorted_syms) &&
-	       ADD_SUFFIX(mlsd_build_table)(s->lt, lens,
+	       ADD_SUFFIX(mlsd_build_table)(d->u.mlsd.lt, lens,
 					    num_litlen_syms, MLSD_TABLEBITS,
 					    1U << MLSD_TABLEBITS, true,
 					    d->sorted_syms);
@@ -418,17 +411,16 @@ out:
  * Decode as much of the current Huffman block as possible with the lanes, and
  * leave ctx at a symbol boundary: past the end-of-block symbol if the result
  * is FASTLOOP_BLOCK_DONE.  At least DEFLATE_MAX_MATCH_OFFSET bytes must have
- * been written.  The output stops short of 's'.  state[] carries the lanes'
- * bits per step (times 16) and the margin across blocks.
+ * been written.  state[] carries the lanes' bits per step (times 16) and the
+ * margin across blocks.
  */
 static NOINLINE ATTRIBUTES enum fastloop_result
-ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
-				 struct mlsd_scratch * restrict s,
+ADD_SUFFIX(decompress_multilane)(struct libdeflate_decompressor * restrict d,
+				 struct fastloop_ctx * restrict ctx,
 				 const u8 * const in, const u8 * const in_end,
-				 size_t * restrict state)
+				 u8 * const out_end, size_t * restrict state)
 {
-	const u64 * const lt = s->lt, * const ot = s->ot;
-	const u8 * const out_end = (const u8 *)s;
+	const u64 * const lt = d->u.mlsd.lt, * const ot = d->u.mlsd.ot;
 	size_t pos[2][MLSD_LANES], base[2][MLSD_LANES], nrec = 0, r = 0;
 	size_t end_pos = (size_t)(ctx->in_next - in) * 8 - (u8)ctx->bitsleft;
 	size_t rate16 = state[0], margin = state[1];
@@ -446,7 +438,7 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 		const size_t dist = MAX(rate16 * nsteps / 16, margin + 64) -
 				    margin;
 		u16 (*pp)[MLSD_NREC + 1];
-		unsigned ans[MLSD_LANES], tgt[MLSD_LANES], half, lo = 0;
+		unsigned ans[MLSD_LANES], tgt[MLSD_LANES], s, lo = 0;
 		size_t prog = 0;
 		const u64 *stop;
 
@@ -463,19 +455,19 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 				end_pos + (size_t)i * dist;
 		/* ... while executing the verified records of the last one. */
 		stop = ADD_SUFFIX(mlsd_run)(in, pos[cur ^ 1], lt, ot,
-					    s->recs[cur ^ 1],
-					    s->poss[cur ^ 1], nsteps, seg,
+					    d->mlsd_recs[cur ^ 1],
+					    d->mlsd_poss[cur ^ 1], nsteps, seg,
 					    nseg, r, &out,
 					    out_end - out > (ptrdiff_t)space ?
 					    out_end - space : out - 1);
 		if (stop != NULL) {
 			/* At end-of-block, or out of space */
-			const size_t idx = stop - &s->recs[cur][0][0];
+			const size_t idx = stop - &d->mlsd_recs[cur][0][0];
 			const bool eob = (*stop >> 18 & 0x1FF) == MLSD_EOB_LEN;
 
 			i = idx / MLSD_NREC;
 			end_pos = base[cur][i] +
-				  (u16)(s->poss[cur][i][idx % MLSD_NREC +
+				  (u16)(d->mlsd_poss[cur][i][idx % MLSD_NREC +
 							     eob] -
 					base[cur][i]);
 			if (eob)
@@ -490,17 +482,17 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 		 * Look for the end of each lane among the next lane's
 		 * positions, with branchless binary searches run interleaved.
 		 */
-		pp = s->poss[cur];
+		pp = d->mlsd_poss[cur];
 		for (i = 0; i + 1 < MLSD_LANES; i++) {
 			const ptrdiff_t t = pos[cur][i] - base[cur][i + 1];
 
 			tgt[i] = t <= 0 ? 0 : MIN(t, 0xFFFF);	/* 0: none */
 			ans[i] = 0;
 		}
-		for (half = nsteps / 2; half >= 1; half >>= 1) {
+		for (s = nsteps / 2; s >= 1; s >>= 1) {
 			MLSD_UNROLL_LOOP
 			for (i = 0; i + 1 < MLSD_LANES; i++) {
-				const unsigned a = ans[i] + half;
+				const unsigned a = ans[i] + s;
 				const u16 rel = pp[i + 1][a] - base[cur][i + 1];
 
 				ans[i] = rel < tgt[i] ? a : ans[i];
@@ -533,7 +525,7 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 				}
 				while (next < 0 &&
 				       cnt < nsteps + MLSD_CATCHUP) {
-					MLSD_STEP(p, &s->recs[cur][i][cnt],
+					MLSD_STEP(p, &d->mlsd_recs[cur][i][cnt],
 						  &pp[i][cnt]);
 					pp[i][++cnt] = (u16)p;
 					if (p <= b)
@@ -549,8 +541,8 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 				pos[cur][i] = p;
 			}
 			if (cnt > lo) {
-				seg[nseg].p = &s->recs[cur][i][lo];
-				seg[nseg].end = &s->recs[cur][i][cnt];
+				seg[nseg].p = &d->mlsd_recs[cur][i][lo];
+				seg[nseg].end = &d->mlsd_recs[cur][i][cnt];
 				r += cnt - lo;
 				nseg++;
 			}
