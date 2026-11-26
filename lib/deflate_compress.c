@@ -440,6 +440,12 @@ struct deflate_lens {
 struct deflate_codes {
 	struct deflate_codewords codewords;
 	struct deflate_lens lens;
+
+	/* For deflate_make_huffman_codewords() */
+	unsigned litlen_len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
+	unsigned offset_len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
+	unsigned num_used_litlen_syms;
+	unsigned num_used_offset_syms;
 };
 
 /* Symbol frequency counters for the DEFLATE Huffman codes */
@@ -922,7 +928,7 @@ heap_sort(u32 A[], unsigned length)
  * Return true if at most half the symbols are used, as is usual for small
  * blocks.  Then it's faster for the later loops over the symbols to go through
  * just the list of used symbols that sort_symbols() makes.  The list fits in
- * the last num_used_syms entries of 'A' (see deflate_make_huffman_code()),
+ * the last num_used_syms entries of 'A' (see deflate_make_huffman_lens()),
  * which the sorted symbols and the tree don't use.
  */
 static forceinline bool
@@ -1186,9 +1192,7 @@ build_tree(u32 A[], unsigned sym_count)
  *	The array produced by build_tree(), containing parent index information
  *	for the non-leaf nodes of the Huffman tree.  Each entry in this array is
  *	a node; a node's parent always has a greater index than that node
- *	itself.  This function will overwrite the parent index information in
- *	this array, so essentially it will destroy the tree.  However, the data
- *	in the low NUM_SYMBOL_BITS of each entry will be preserved.
+ *	itself.
  *
  * @root_idx
  *	The 0-based index of the root node in 'A', and consequently one less
@@ -1203,11 +1207,12 @@ build_tree(u32 A[], unsigned sym_count)
  *	The maximum permissible codeword length.
  */
 static void
-compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
+compute_length_counts(const u32 A[], unsigned root_idx, unsigned len_counts[],
 		      unsigned max_codeword_len)
 {
 	unsigned first_node[DEFLATE_MAX_CODEWORD_LEN] = { 0 };
 	unsigned num_parents;
+	unsigned depth;
 	unsigned len;
 	int node;
 
@@ -1216,8 +1221,7 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 *
 	 * (1) We can traverse the non-leaf nodes of the tree, always visiting a
 	 *     parent before its children, by simply iterating through the array
-	 *     in reverse order.  Consequently, we can compute the depth of each
-	 *     node in one pass, overwriting the parent indices with depths.
+	 *     in reverse order.
 	 *
 	 * (2) We can initially assume that in the real Huffman tree, both
 	 *     children of the root are leaves.  This corresponds to two
@@ -1236,37 +1240,21 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 *     them, so a node's parent never has a lower index than the parent
 	 *     of a lower-indexed node.  Therefore the depths are nondecreasing
 	 *     in the traversal order, and the nodes at each depth have
-	 *     consecutive indices.  So for the nodes shallower than
-	 *     max_codeword_len, which come first, the number at each depth
-	 *     follows from the lowest index at each depth ('first_node').  That
-	 *     avoids incrementing counters in memory, which would be slow since
+	 *     consecutive indices.  So a node is one deeper than the previous
+	 *     one exactly when its parent is below the lowest node at the
+	 *     previous one's parent depth ('first_node'), and for the nodes
+	 *     shallower than max_codeword_len, which come first, the number at
+	 *     each depth follows from 'first_node'.  That avoids storing depths
+	 *     and incrementing counters in memory, which would be slow since
 	 *     successive nodes often have the same depth.
 	 */
 
-	/* Set the root node's depth to 0. */
-	A[root_idx] &= SYMBOL_MASK;
 	first_node[0] = root_idx;
-
+	depth = 1;
 	for (node = root_idx - 1; node >= 0; node--) {
-
-		/* Calculate the depth of this node. */
-
-		unsigned parent = A[node] >> NUM_SYMBOL_BITS;
-		unsigned parent_depth = A[parent] >> NUM_SYMBOL_BITS;
-		unsigned depth = parent_depth + 1;
-
-		/* See observation (4). */
-		ASSERT(depth >= (A[node + 1] >> NUM_SYMBOL_BITS));
-
-		if (depth >= max_codeword_len)
+		if ((A[node] >> NUM_SYMBOL_BITS) < first_node[depth - 1] &&
+		    ++depth >= max_codeword_len)
 			break;
-
-		/*
-		 * Set the depth of this node so that it is available when its
-		 * children (if any) are processed.
-		 */
-		A[node] = (A[node] & SYMBOL_MASK) | (depth << NUM_SYMBOL_BITS);
-
 		first_node[depth] = node;
 	}
 
@@ -1295,8 +1283,7 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 * should be good enough.
 	 */
 	for (; node >= 0; node--) {
-		unsigned depth = max_codeword_len;
-
+		depth = max_codeword_len;
 		do {
 			depth--;
 		} while (len_counts[depth] == 0);
@@ -1368,15 +1355,13 @@ static forceinline u32 reverse_codeword(u32 codeword, u8 len)
 #endif /* !rbit32 */
 
 /*
- * Generate the codewords for a canonical Huffman code.
+ * Assign the codeword lengths to the symbols.
  *
  * @A
- *	The output array for codewords.  In addition, initially this
- *	array must contain the symbols, sorted primarily by frequency and
- *	secondarily by symbol value, in the low NUM_SYMBOL_BITS bits of
- *	each entry.
+ *	The symbols, sorted primarily by frequency and secondarily by symbol
+ *	value, in the low NUM_SYMBOL_BITS bits of each entry.
  *
- * @len
+ * @lens
  *	Output array for codeword lengths.
  *
  * @len_counts
@@ -1385,25 +1370,13 @@ static forceinline u32 reverse_codeword(u32 codeword, u8 len)
  *
  * @max_codeword_len
  *	Maximum length, in bits, of each codeword.
- *
- * @num_syms
- *	Number of symbols in the alphabet, including symbols with zero
- *	frequency.  This is the length of the 'A' and 'len' arrays.
- *
- * @num_used_syms
- *	The number of symbols with nonzero frequency.  If few_syms_used(),
- *	the last num_used_syms entries of 'A' must initially list these
- *	symbols in increasing order, and only they get codewords.
  */
 static void
-gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
-	      unsigned max_codeword_len, unsigned num_syms,
-	      unsigned num_used_syms)
+gen_lens(const u32 A[], u8 lens[], const unsigned len_counts[],
+	 unsigned max_codeword_len)
 {
-	u32 next_codewords[DEFLATE_MAX_CODEWORD_LEN + 1];
 	unsigned i;
 	unsigned len;
-	unsigned sym;
 
 	/*
 	 * Given the number of codewords that will have each length, assign
@@ -1417,6 +1390,42 @@ gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
 		while (count--)
 			lens[A[i++] & SYMBOL_MASK] = len;
 	}
+}
+
+/*
+ * Generate the codewords for a canonical Huffman code.
+ *
+ * @A
+ *	The output array for codewords.
+ *
+ * @lens
+ *	The codeword lengths.
+ *
+ * @len_counts
+ *	An array that provides the number of codewords that have each
+ *	possible length <= max_codeword_len.
+ *
+ * @max_codeword_len
+ *	Maximum length, in bits, of each codeword.
+ *
+ * @num_syms
+ *	Number of symbols in the alphabet, including symbols with zero
+ *	frequency.  This is the length of the 'A' and 'lens' arrays.
+ *
+ * @num_used_syms
+ *	The number of symbols with nonzero frequency.  If few_syms_used(),
+ *	the last num_used_syms entries of 'A' must initially list these
+ *	symbols in increasing order, and only they get codewords.
+ */
+static void
+gen_codewords(u32 A[], const u8 lens[], const unsigned len_counts[],
+	      unsigned max_codeword_len, unsigned num_syms,
+	      unsigned num_used_syms)
+{
+	u32 next_codewords[DEFLATE_MAX_CODEWORD_LEN + 1];
+	unsigned i;
+	unsigned len;
+	unsigned sym;
 
 	/*
 	 * Generate the codewords themselves.  We initialize the
@@ -1457,11 +1466,12 @@ gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
 
 /*
  * ---------------------------------------------------------------------
- *			deflate_make_huffman_code()
+ *			deflate_make_huffman_lens()
  * ---------------------------------------------------------------------
  *
- * Given an alphabet and the frequency of each symbol in it, construct a
- * length-limited canonical Huffman code.
+ * Given an alphabet and the frequency of each symbol in it, compute the
+ * codeword lengths of a length-limited canonical Huffman code.  If the
+ * codewords are needed, deflate_gen_huffman_codewords() then generates them.
  *
  * @num_syms
  *	The number of symbols in the alphabet.  The symbols are the integers in
@@ -1484,9 +1494,20 @@ gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
  *	be assigned.
  *
  * @codewords
- *	An array of @num_syms entries in which this function will return the
- *	codeword for each symbol, right-justified and padded on the left with
- *	zeroes.  Codewords for symbols with 0 frequency will be undefined.
+ *	An array of @num_syms entries in which deflate_gen_huffman_codewords()
+ *	will return the codeword for each symbol, right-justified and padded
+ *	on the left with zeroes.  Codewords for symbols with 0 frequency will
+ *	be undefined.  Until then it holds data that
+ *	deflate_gen_huffman_codewords() needs.
+ *
+ * @len_counts
+ *	An array of (@max_codeword_len + 1) entries in which the number of
+ *	codewords of each length will be returned, for
+ *	deflate_gen_huffman_codewords().
+ *
+ * Returns the number of symbols with nonzero frequency, for
+ * deflate_gen_huffman_codewords(), or 0 if the codewords have already been
+ * generated.
  *
  * ---------------------------------------------------------------------
  *
@@ -1555,9 +1576,10 @@ gen_codewords(u32 A[], u8 lens[], const unsigned len_counts[],
  * Many of these optimizations are based on the implementation in 7-Zip (source
  * file: C/HuffEnc.c), which was placed in the public domain by Igor Pavlov.
  */
-static void
-deflate_make_huffman_code(unsigned num_syms, unsigned max_codeword_len,
-			  const u32 freqs[], u8 lens[], u32 codewords[])
+static unsigned
+deflate_make_huffman_lens(unsigned num_syms, unsigned max_codeword_len,
+			  const u32 freqs[], u8 lens[], u32 codewords[],
+			  unsigned len_counts[])
 {
 	u32 *A = codewords;
 	unsigned num_used_syms;
@@ -1614,26 +1636,49 @@ deflate_make_huffman_code(unsigned num_syms, unsigned max_codeword_len,
 		lens[0] = 1;
 		codewords[nonzero_idx] = 1;
 		lens[nonzero_idx] = 1;
-		return;
+		return 0;
 	}
 
 	/*
 	 * Build a stripped-down version of the Huffman tree, sharing the array
 	 * 'A' with the symbol values.  Then extract length counts from the tree
-	 * and use them to generate the final codewords.
+	 * and use them to assign the codeword lengths.
 	 */
-
 	build_tree(A, num_used_syms);
+	compute_length_counts(A, num_used_syms - 2, len_counts,
+			      max_codeword_len);
+	gen_lens(A, lens, len_counts, max_codeword_len);
+	return num_used_syms;
+}
 
-	{
-		unsigned len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
+/*
+ * Generate the codewords of a Huffman code whose lengths
+ * deflate_make_huffman_lens() computed.  @len_counts and @num_used_syms are
+ * what it returned, and @codewords must be unchanged since.
+ */
+static void
+deflate_gen_huffman_codewords(unsigned num_syms, unsigned max_codeword_len,
+			      const u8 lens[], u32 codewords[],
+			      const unsigned len_counts[],
+			      unsigned num_used_syms)
+{
+	if (num_used_syms != 0)
+		gen_codewords(codewords, lens, len_counts, max_codeword_len,
+			      num_syms, num_used_syms);
+}
 
-		compute_length_counts(A, num_used_syms - 2,
-				      len_counts, max_codeword_len);
+/* Build a Huffman code: compute the codeword lengths and the codewords. */
+static void
+deflate_make_huffman_code(unsigned num_syms, unsigned max_codeword_len,
+			  const u32 freqs[], u8 lens[], u32 codewords[])
+{
+	unsigned len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
+	unsigned num_used_syms =
+		deflate_make_huffman_lens(num_syms, max_codeword_len, freqs,
+					  lens, codewords, len_counts);
 
-		gen_codewords(A, lens, len_counts, max_codeword_len, num_syms,
-			      num_used_syms);
-	}
+	deflate_gen_huffman_codewords(num_syms, max_codeword_len, lens,
+				      codewords, len_counts, num_used_syms);
 }
 
 /*
@@ -1667,6 +1712,55 @@ deflate_make_huffman_codes(const struct deflate_freqs *freqs,
 				  freqs->offset,
 				  codes->lens.offset,
 				  codes->codewords.offset);
+}
+
+/*
+ * Like deflate_make_huffman_codes(), but produce only the codeword lengths, as
+ * the near-optimal parser's cost model needs.  deflate_make_huffman_codewords()
+ * then produces the codewords.
+ */
+static void
+deflate_make_huffman_lens_only(const struct deflate_freqs *freqs,
+			       struct deflate_codes *codes)
+{
+	codes->num_used_litlen_syms =
+		deflate_make_huffman_lens(DEFLATE_NUM_LITLEN_SYMS,
+					  MAX_LITLEN_CODEWORD_LEN,
+					  freqs->litlen,
+					  codes->lens.litlen,
+					  codes->codewords.litlen,
+					  codes->litlen_len_counts);
+
+	codes->num_used_offset_syms =
+		deflate_make_huffman_lens(DEFLATE_NUM_OFFSET_SYMS,
+					  MAX_OFFSET_CODEWORD_LEN,
+					  freqs->offset,
+					  codes->lens.offset,
+					  codes->codewords.offset,
+					  codes->offset_len_counts);
+}
+
+/*
+ * Generate the codewords of the codes that deflate_make_huffman_codes() built.
+ * Only a block that is output with these codes needs them, not codes built
+ * just to compute costs or for a block that is output uncompressed or static.
+ */
+static void
+deflate_make_huffman_codewords(struct deflate_codes *codes)
+{
+	deflate_gen_huffman_codewords(DEFLATE_NUM_LITLEN_SYMS,
+				      MAX_LITLEN_CODEWORD_LEN,
+				      codes->lens.litlen,
+				      codes->codewords.litlen,
+				      codes->litlen_len_counts,
+				      codes->num_used_litlen_syms);
+
+	deflate_gen_huffman_codewords(DEFLATE_NUM_OFFSET_SYMS,
+				      MAX_OFFSET_CODEWORD_LEN,
+				      codes->lens.offset,
+				      codes->codewords.offset,
+				      codes->offset_len_counts,
+				      codes->num_used_offset_syms);
 }
 
 /* Initialize c->static_codes. */
@@ -3238,7 +3332,7 @@ deflate_choose_all_literals(struct libdeflate_compressor *c,
 		c->freqs.litlen[block[i]]++;
 	c->freqs.litlen[DEFLATE_END_OF_BLOCK]++;
 
-	deflate_make_huffman_codes(&c->freqs, &c->codes);
+	deflate_make_huffman_lens_only(&c->freqs, &c->codes);
 }
 
 /*
@@ -3797,7 +3891,7 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 							  cache_ptr);
 	deflate_reset_symbol_frequencies(c);
 	deflate_tally_item_list(c, block_length);
-	deflate_make_huffman_codes(&c->freqs, &c->codes);
+	deflate_make_huffman_lens_only(&c->freqs, &c->codes);
 	return cost;
 }
 
@@ -3954,6 +4048,7 @@ deflate_optimize_and_flush_block(struct libdeflate_compressor *c,
 		deflate_find_min_cost_path(c, block_length, cache_ptr);
 		deflate_set_costs_from_codes(c, &c->codes.lens);
 	}
+	deflate_make_huffman_codewords(&c->codes);
 	deflate_flush_block(c, os, block_begin, block_length, seq,
 			    is_final_block);
 }
@@ -4459,9 +4554,9 @@ libdeflate_alloc_compressor_ex(int compression_level,
 	}
 
 	/*
-	 * deflate_make_huffman_code() may leave the codewords of unused symbols
-	 * unset, and deflate_compute_full_len_codewords() reads those of the
-	 * length symbols.
+	 * deflate_gen_huffman_codewords() may leave the codewords of unused
+	 * symbols unset, and deflate_compute_full_len_codewords() can read
+	 * those of the length symbols.
 	 */
 	memset(&c->codes.codewords, 0, sizeof(c->codes.codewords));
 
