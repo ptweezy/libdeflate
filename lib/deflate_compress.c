@@ -441,13 +441,6 @@ struct deflate_codes {
 	struct deflate_codewords codewords;
 	struct deflate_lens lens;
 
-	/*
-	 * The "full" match length codewords: for each match length, the litlen
-	 * codeword followed by the extra length bits, and its length.
-	 */
-	u32 len_codewords[DEFLATE_MAX_MATCH_LEN + 1];
-	u8 len_lens[DEFLATE_MAX_MATCH_LEN + 1];
-
 	/* For deflate_make_huffman_codewords() */
 	unsigned litlen_len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
 	unsigned offset_len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
@@ -585,6 +578,14 @@ struct libdeflate_compressor {
 			unsigned num_explicit_lens;
 			unsigned num_items;
 		} precode;
+		/*
+		 * The "full" length codewords.  Used only after the information
+		 * in 'precode' is no longer needed.
+		 */
+		struct {
+			u32 codewords[DEFLATE_MAX_MATCH_LEN + 1];
+			u8 lens[DEFLATE_MAX_MATCH_LEN + 1];
+		} length;
 	} o;
 
 	union {
@@ -1191,9 +1192,7 @@ build_tree(u32 A[], unsigned sym_count)
  *	The array produced by build_tree(), containing parent index information
  *	for the non-leaf nodes of the Huffman tree.  Each entry in this array is
  *	a node; a node's parent always has a greater index than that node
- *	itself.  This function will overwrite the parent index information in
- *	this array, so essentially it will destroy the tree.  However, the data
- *	in the low NUM_SYMBOL_BITS of each entry will be preserved.
+ *	itself.
  *
  * @root_idx
  *	The 0-based index of the root node in 'A', and consequently one less
@@ -1208,11 +1207,12 @@ build_tree(u32 A[], unsigned sym_count)
  *	The maximum permissible codeword length.
  */
 static void
-compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
+compute_length_counts(const u32 A[], unsigned root_idx, unsigned len_counts[],
 		      unsigned max_codeword_len)
 {
 	unsigned first_node[DEFLATE_MAX_CODEWORD_LEN] = { 0 };
 	unsigned num_parents;
+	unsigned depth;
 	unsigned len;
 	int node;
 
@@ -1221,8 +1221,7 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 *
 	 * (1) We can traverse the non-leaf nodes of the tree, always visiting a
 	 *     parent before its children, by simply iterating through the array
-	 *     in reverse order.  Consequently, we can compute the depth of each
-	 *     node in one pass, overwriting the parent indices with depths.
+	 *     in reverse order.
 	 *
 	 * (2) We can initially assume that in the real Huffman tree, both
 	 *     children of the root are leaves.  This corresponds to two
@@ -1241,37 +1240,21 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 *     them, so a node's parent never has a lower index than the parent
 	 *     of a lower-indexed node.  Therefore the depths are nondecreasing
 	 *     in the traversal order, and the nodes at each depth have
-	 *     consecutive indices.  So for the nodes shallower than
-	 *     max_codeword_len, which come first, the number at each depth
-	 *     follows from the lowest index at each depth ('first_node').  That
-	 *     avoids incrementing counters in memory, which would be slow since
+	 *     consecutive indices.  So a node is one deeper than the previous
+	 *     one exactly when its parent is below the lowest node at the
+	 *     previous one's parent depth ('first_node'), and for the nodes
+	 *     shallower than max_codeword_len, which come first, the number at
+	 *     each depth follows from 'first_node'.  That avoids storing depths
+	 *     and incrementing counters in memory, which would be slow since
 	 *     successive nodes often have the same depth.
 	 */
 
-	/* Set the root node's depth to 0. */
-	A[root_idx] &= SYMBOL_MASK;
 	first_node[0] = root_idx;
-
+	depth = 1;
 	for (node = root_idx - 1; node >= 0; node--) {
-
-		/* Calculate the depth of this node. */
-
-		unsigned parent = A[node] >> NUM_SYMBOL_BITS;
-		unsigned parent_depth = A[parent] >> NUM_SYMBOL_BITS;
-		unsigned depth = parent_depth + 1;
-
-		/* See observation (4). */
-		ASSERT(depth >= (A[node + 1] >> NUM_SYMBOL_BITS));
-
-		if (depth >= max_codeword_len)
+		if ((A[node] >> NUM_SYMBOL_BITS) < first_node[depth - 1] &&
+		    ++depth >= max_codeword_len)
 			break;
-
-		/*
-		 * Set the depth of this node so that it is available when its
-		 * children (if any) are processed.
-		 */
-		A[node] = (A[node] & SYMBOL_MASK) | (depth << NUM_SYMBOL_BITS);
-
 		first_node[depth] = node;
 	}
 
@@ -1300,8 +1283,7 @@ compute_length_counts(u32 A[], unsigned root_idx, unsigned len_counts[],
 	 * should be good enough.
 	 */
 	for (; node >= 0; node--) {
-		unsigned depth = max_codeword_len;
-
+		depth = max_codeword_len;
 		do {
 			depth--;
 		} while (len_counts[depth] == 0);
@@ -1710,44 +1692,6 @@ deflate_reset_symbol_frequencies(struct libdeflate_compressor *c)
 }
 
 /*
- * To make it faster to output matches, compute the "full" match length
- * codewords, i.e. the concatenation of the litlen codeword and the extra bits
- * for each possible match length.
- */
-static void
-deflate_compute_full_len_codewords(struct deflate_codes *codes)
-{
-	unsigned slot;
-
-	STATIC_ASSERT(MAX_LITLEN_CODEWORD_LEN +
-		      DEFLATE_MAX_EXTRA_LENGTH_BITS <= 32);
-
-	/*
-	 * Only the lengths whose symbols are used are needed, and small blocks
-	 * use few.  Length 258, the last slot's, is also in the range of the
-	 * slot before it, so the slots go in increasing order.
-	 */
-	for (slot = 0; slot < ARRAY_LEN(deflate_length_slot_base); slot++) {
-		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
-		u32 codeword = codes->codewords.litlen[litlen_sym];
-		unsigned len = codes->lens.litlen[litlen_sym];
-		unsigned num_extra_bits = deflate_extra_length_bits[slot];
-		u32 base = deflate_length_slot_base[slot];
-		u32 extra_bits;
-
-		if (len == 0)
-			continue;
-		for (extra_bits = 0; extra_bits < (1U << num_extra_bits);
-		     extra_bits++) {
-			codes->len_codewords[base + extra_bits] =
-				codeword | (extra_bits << len);
-			codes->len_lens[base + extra_bits] =
-				len + num_extra_bits;
-		}
-	}
-}
-
-/*
  * Build the literal/length and offset Huffman codes for a DEFLATE block.
  *
  * This takes as input the frequency tables for each alphabet and produces as
@@ -1838,7 +1782,6 @@ deflate_init_static_codes(struct libdeflate_compressor *c)
 		c->freqs.offset[i] = 1 << (5 - 5);
 
 	deflate_make_huffman_codes(&c->freqs, &c->static_codes);
-	deflate_compute_full_len_codewords(&c->static_codes);
 }
 
 /* Return the offset slot for the given match offset, using the small map. */
@@ -2007,13 +1950,9 @@ run_extended:
  * immediately precede the compressed codeword lengths of the larger code.
  */
 
-/*
- * Precompute the information needed to output dynamic Huffman codes, and if
- * @for_output, also the full length codewords for outputting the block.
- */
+/* Precompute the information needed to output dynamic Huffman codes. */
 static void
-deflate_precompute_huffman_header(struct libdeflate_compressor *c,
-				  bool for_output)
+deflate_precompute_huffman_header(struct libdeflate_compressor *c)
 {
 	/* Compute how many litlen and offset symbols are needed. */
 
@@ -2073,14 +2012,39 @@ deflate_precompute_huffman_header(struct libdeflate_compressor *c,
 			(u8 *)&c->codes.lens + c->o.precode.num_litlen_syms,
 			c->o.precode.num_offset_syms);
 	}
+}
 
-	if (for_output)
-		deflate_compute_full_len_codewords(&c->codes);
+/*
+ * To make it faster to output matches, compute the "full" match length
+ * codewords, i.e. the concatenation of the litlen codeword and the extra bits
+ * for each possible match length.
+ */
+static void
+deflate_compute_full_len_codewords(struct libdeflate_compressor *c,
+				   const struct deflate_codes *codes)
+{
+	u32 len;
+
+	STATIC_ASSERT(MAX_LITLEN_CODEWORD_LEN +
+		      DEFLATE_MAX_EXTRA_LENGTH_BITS <= 32);
+
+	for (len = DEFLATE_MIN_MATCH_LEN; len <= DEFLATE_MAX_MATCH_LEN; len++) {
+		unsigned slot = deflate_length_slot[len];
+		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
+		u32 extra_bits = len - deflate_length_slot_base[slot];
+
+		c->o.length.codewords[len] =
+			codes->codewords.litlen[litlen_sym] |
+			(extra_bits << codes->lens.litlen[litlen_sym]);
+		c->o.length.lens[len] = codes->lens.litlen[litlen_sym] +
+					deflate_extra_length_bits[slot];
+	}
 }
 
 /* Write a match to the output buffer. */
-#define WRITE_MATCH(codes_, length_, offset_, offset_slot_)		\
+#define WRITE_MATCH(c_, codes_, length_, offset_, offset_slot_)		\
 do {									\
+	const struct libdeflate_compressor *c__ = (c_);			\
 	const struct deflate_codes *codes__ = (codes_);			\
 	u32 length__ = (length_);					\
 	u32 offset__ = (offset_);					\
@@ -2089,8 +2053,8 @@ do {									\
 	/* Litlen symbol and extra length bits */			\
 	STATIC_ASSERT(CAN_BUFFER(MAX_LITLEN_CODEWORD_LEN +		\
 				 DEFLATE_MAX_EXTRA_LENGTH_BITS));	\
-	ADD_BITS(codes__->len_codewords[length__],			\
-		 codes__->len_lens[length__]);				\
+	ADD_BITS(c__->o.length.codewords[length__],			\
+		 c__->o.length.lens[length__]);				\
 									\
 	if (!CAN_BUFFER(MAX_LITLEN_CODEWORD_LEN +			\
 			DEFLATE_MAX_EXTRA_LENGTH_BITS +			\
@@ -2165,7 +2129,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	ASSERT(!os->overflow);
 
 	/* Precompute the precode items and build the precode. */
-	deflate_precompute_huffman_header(c, true);
+	deflate_precompute_huffman_header(c);
 
 	/* Account for the cost of encoding dynamic Huffman codes. */
 	dynamic_cost += 5 + 5 + 4 + (3 * c->o.precode.num_explicit_lens);
@@ -2347,6 +2311,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 
 	/* Output the literals and matches for a dynamic or static block. */
 	ASSERT(bitcount <= 7);
+	deflate_compute_full_len_codewords(c, codes);
 #if SUPPORT_NEAR_OPTIMAL_PARSING
 	if (sequences == NULL) {
 		/* Output the literals and matches from the minimum-cost path */
@@ -2393,7 +2358,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 			/* Match */
 			length = item >> OPTIMUM_LEN_SHIFT;
 			offset = item & OPTIMUM_OFFSET_MASK;
-			WRITE_MATCH(codes, length, offset,
+			WRITE_MATCH(c, codes, length, offset,
 				    c->p.n.offset_slot_full[offset]);
 			i += length;
 		}
@@ -2412,7 +2377,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 				u32 length = item >> OPTIMUM_LEN_SHIFT;
 				u32 offset = item & OPTIMUM_OFFSET_MASK;
 
-				WRITE_MATCH(codes, length, offset,
+				WRITE_MATCH(c, codes, length, offset,
 					    c->p.n.offset_slot_full[offset]);
 				i += length;
 			}
@@ -2479,7 +2444,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 			}
 
 			/* Output a match. */
-			WRITE_MATCH(codes, length, seq->offset,
+			WRITE_MATCH(c, codes, length, seq->offset,
 				    seq->offset_slot);
 			in_next += length;
 		}
@@ -3381,7 +3346,7 @@ deflate_compute_true_cost(struct libdeflate_compressor *c)
 	u32 cost = 0;
 	unsigned sym;
 
-	deflate_precompute_huffman_header(c, false);
+	deflate_precompute_huffman_header(c);
 
 	memset(&c->codes.lens.litlen[c->o.precode.num_litlen_syms], 0,
 	       DEFLATE_NUM_LITLEN_SYMS - c->o.precode.num_litlen_syms);
