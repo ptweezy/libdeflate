@@ -1417,7 +1417,7 @@ gen_lens(const u32 A[], u8 lens[], const unsigned len_counts[],
  *	the last num_used_syms entries of 'A' must initially list these
  *	symbols in increasing order, and only they get codewords.
  */
-static forceinline void
+static void
 gen_codewords(u32 A[], const u8 lens[], const unsigned len_counts[],
 	      unsigned max_codeword_len, unsigned num_syms,
 	      unsigned num_used_syms)
@@ -1724,7 +1724,7 @@ deflate_make_huffman_codes(const struct deflate_freqs *freqs,
  * Only a block that is output with these codes needs them, not codes built
  * just to compute costs or for a block that is output uncompressed or static.
  */
-static forceinline void
+static void
 deflate_make_huffman_codewords(struct deflate_codes *codes)
 {
 	deflate_gen_huffman_codewords(DEFLATE_NUM_LITLEN_SYMS,
@@ -2096,11 +2096,10 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	 */
 	const u8 *in_next = block_begin;
 	const u8 * const in_end = block_begin + block_length;
-	bitbuf_t bitbuf = os->bitbuf;
-	unsigned bitcount = os->bitcount;
-	u8 *out_next = os->next;
-	u8 * const out_fast_end =
-		os->end - MIN(WORDBYTES - 1, os->end - out_next);
+	bitbuf_t bitbuf;
+	unsigned bitcount;
+	u8 *out_next;
+	u8 *out_fast_end;
 	/*
 	 * The cost for each block type, in bits.  Start with the cost of the
 	 * block header which is 3 bits.
@@ -2115,9 +2114,9 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	ASSERT(block_length >= MIN_BLOCK_LENGTH ||
 	       (is_final_block && block_length > 0));
 	ASSERT(block_length <= MAX_BLOCK_LENGTH);
-	ASSERT(bitcount <= 7);
-	ASSERT((bitbuf & ~(((bitbuf_t)1 << bitcount) - 1)) == 0);
-	ASSERT(out_next <= os->end);
+	ASSERT(os->bitcount <= 7);
+	ASSERT((os->bitbuf & ~(((bitbuf_t)1 << os->bitcount) - 1)) == 0);
+	ASSERT(os->next <= os->end);
 	ASSERT(!os->overflow);
 
 	/* Precompute the precode items and build the precode. */
@@ -2171,7 +2170,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	}
 
 	/* Compute the cost of using uncompressed blocks. */
-	uncompressed_cost += (-(bitcount + 3) & 7) + 32 +
+	uncompressed_cost += (-(os->bitcount + 3) & 7) + 32 +
 			     (40 * (DIV_ROUND_UP(block_length,
 						 UINT16_MAX) - 1)) +
 			     (8 * block_length);
@@ -2184,7 +2183,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	best_cost = MIN(dynamic_cost, MIN(static_cost, uncompressed_cost));
 
 	/* If the block isn't going to fit, then stop early. */
-	if (DIV_ROUND_UP(bitcount + best_cost, 8) > os->end - out_next) {
+	if (DIV_ROUND_UP(os->bitcount + best_cost, 8) > os->end - os->next) {
 		os->overflow = true;
 		return;
 	}
@@ -2192,6 +2191,18 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	 * Else, now we know that the block fits, so no further bounds checks on
 	 * the output buffer are required until the next block.
 	 */
+
+	/*
+	 * A dynamic block needs the codewords.  Generate them before loading
+	 * the output bitstream state, which the block output keeps in
+	 * registers, so that it isn't live across the call.
+	 */
+	if (best_cost != uncompressed_cost && best_cost != static_cost)
+		deflate_make_huffman_codewords(&c->codes);
+	bitbuf = os->bitbuf;
+	bitcount = os->bitcount;
+	out_next = os->next;
+	out_fast_end = os->end - MIN(WORDBYTES - 1, os->end - out_next);
 
 	if (best_cost == uncompressed_cost) {
 		/*
@@ -2249,7 +2260,6 @@ deflate_flush_block(struct libdeflate_compressor *c,
 		/* Dynamic Huffman block */
 
 		codes = &c->codes;
-		deflate_make_huffman_codewords(codes);
 		STATIC_ASSERT(CAN_BUFFER(1 + 2 + 5 + 5 + 4 + 3));
 		ADD_BITS(is_final_block, 1);
 		ADD_BITS(DEFLATE_BLOCKTYPE_DYNAMIC_HUFFMAN, 2);
