@@ -1,5 +1,5 @@
 /* [test only] variant defines begin */
-/* variant: MINI3V2_ANYPRIO */
+/* variant: MINI2_ANYPRIO */
 #undef MLSD_TEST_ANY_PRIORITY
 #define MLSD_TEST_ANY_PRIORITY 1
 /* [test only] variant defines end */
@@ -967,6 +967,16 @@ struct libdeflate_decompressor {
 		} l;
 
 		u32 litlen_decode_table[LITLEN_ENOUGH];
+#if MLSD_ENABLED
+		/* decompress_multilane.h's tables, which keep 'lens' intact */
+		struct {
+			u8 lens[DEFLATE_NUM_LITLEN_SYMS +
+				DEFLATE_NUM_OFFSET_SYMS +
+				DEFLATE_MAX_LENS_OVERRUN];
+			u64 lt[LITLEN_ENOUGH];
+			u64 ot[OFFSET_ENOUGH + 256];
+		} mlsd;
+#endif
 	} u;
 
 	u32 offset_decode_table[OFFSET_ENOUGH];
@@ -977,22 +987,15 @@ struct libdeflate_decompressor {
 	bool static_codes_loaded;
 	unsigned litlen_tablebits;
 
+#if MLSD_ENABLED
+	/* records and bit positions of the lanes, for 2 rounds */
+	u64 mlsd_recs[2][MLSD_LANES][MLSD_NREC];
+	u16 mlsd_poss[2][MLSD_LANES][MLSD_NREC + 1];
+#endif
+
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
 };
-
-#if MLSD_ENABLED
-/*
- * The lanes' decode tables, and their records and bit positions for 2 rounds.
- * decompress_template.h puts this at the end of the output buffer.
- */
-struct mlsd_scratch {
-	u64 lt[LITLEN_ENOUGH];
-	u64 ot[OFFSET_ENOUGH + 256];
-	u64 recs[2][MLSD_LANES][MLSD_NREC];
-	u16 poss[2][MLSD_LANES][MLSD_NREC + 1];
-};
-#endif
 
 /*****************************************************************************
  *                         Main decompression routine
