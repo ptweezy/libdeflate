@@ -2023,33 +2023,33 @@ static void
 deflate_compute_full_len_codewords(struct libdeflate_compressor *c,
 				   const struct deflate_codes *codes)
 {
-	unsigned slot;
+	unsigned max_slot = ARRAY_LEN(deflate_length_slot_base) - 1;
+	u32 max_len;
+	u32 len;
 
 	STATIC_ASSERT(MAX_LITLEN_CODEWORD_LEN +
 		      DEFLATE_MAX_EXTRA_LENGTH_BITS <= 32);
 
 	/*
-	 * Only the lengths whose symbols are used are needed, and small blocks
-	 * use few.  Length 258, the last slot's, is also in the range of the
-	 * slot before it, so the slots go in increasing order.
+	 * Only the lengths up to the longest one used are needed, and small
+	 * blocks use mostly short ones.
 	 */
-	for (slot = 0; slot < ARRAY_LEN(deflate_length_slot_base); slot++) {
-		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
-		u32 codeword = codes->codewords.litlen[litlen_sym];
-		unsigned len = codes->lens.litlen[litlen_sym];
-		unsigned num_extra_bits = deflate_extra_length_bits[slot];
-		u32 base = deflate_length_slot_base[slot];
-		u32 extra_bits;
+	while (max_slot > 0 &&
+	       codes->lens.litlen[DEFLATE_FIRST_LEN_SYM + max_slot] == 0)
+		max_slot--;
+	max_len = deflate_length_slot_base[max_slot] +
+		  (1U << deflate_extra_length_bits[max_slot]) - 1;
 
-		if (len == 0)
-			continue;
-		for (extra_bits = 0; extra_bits < (1U << num_extra_bits);
-		     extra_bits++) {
-			c->o.length.codewords[base + extra_bits] =
-				codeword | (extra_bits << len);
-			c->o.length.lens[base + extra_bits] =
-				len + num_extra_bits;
-		}
+	for (len = DEFLATE_MIN_MATCH_LEN; len <= max_len; len++) {
+		unsigned slot = deflate_length_slot[len];
+		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
+		u32 extra_bits = len - deflate_length_slot_base[slot];
+
+		c->o.length.codewords[len] =
+			codes->codewords.litlen[litlen_sym] |
+			(extra_bits << codes->lens.litlen[litlen_sym]);
+		c->o.length.lens[len] = codes->lens.litlen[litlen_sym] +
+					deflate_extra_length_bits[slot];
 	}
 }
 
