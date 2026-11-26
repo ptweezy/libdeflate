@@ -1,0 +1,59 @@
+name: mlsd-ci
+# Test-only: per-block lanes-vs-fastloop timings and Huffman code statistics
+# for designing the multi-lane gates (scripts/mlsd_ci/run_gate.sh).  Not for
+# upstream.
+on:
+  push:
+    branches: ['mlsd-ci*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mlsd-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/mlsd_ci/inputs.sh "$RUNNER_TEMP/abin"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+        retention-days: 3
+        compression-level: 1
+  gate:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { name: mac15-1, runner: macos-15 }
+        - { name: mac15-2, runner: macos-15 }
+        - { name: mac15-3, runner: macos-15 }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 4
+    - uses: actions/download-artifact@v8
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+    - name: Per-block gate data (Silesia + enwik8)
+      env:
+        CC: clang
+      run: bash scripts/mlsd_ci/run_gate.sh "$RUNNER_TEMP/abin" "$RUNNER_TEMP/gate"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: gate-${{ matrix.name }}
+        path: |
+          ${{ runner.temp }}/gate/gate.csv
+          ${{ runner.temp }}/gate/gate-system.txt
+        if-no-files-found: warn
