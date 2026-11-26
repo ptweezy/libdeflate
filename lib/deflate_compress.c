@@ -1732,35 +1732,12 @@ deflate_compute_full_len_codewords(struct deflate_codes *codes)
  * Build the literal/length and offset Huffman codes for a DEFLATE block.
  *
  * This takes as input the frequency tables for each alphabet and produces as
- * output a set of tables that map symbols to codewords and codeword lengths.
+ * output the codeword lengths.  deflate_make_huffman_codewords() then produces
+ * the codewords.
  */
 static void
 deflate_make_huffman_codes(const struct deflate_freqs *freqs,
 			   struct deflate_codes *codes)
-{
-	deflate_make_huffman_code(DEFLATE_NUM_LITLEN_SYMS,
-				  MAX_LITLEN_CODEWORD_LEN,
-				  freqs->litlen,
-				  codes->lens.litlen,
-				  codes->codewords.litlen);
-
-	deflate_make_huffman_code(DEFLATE_NUM_OFFSET_SYMS,
-				  MAX_OFFSET_CODEWORD_LEN,
-				  freqs->offset,
-				  codes->lens.offset,
-				  codes->codewords.offset);
-
-	deflate_compute_full_len_codewords(codes);
-}
-
-/*
- * Like deflate_make_huffman_codes(), but produce only the codeword lengths, as
- * the near-optimal parser's cost model needs.  deflate_make_huffman_codewords()
- * then produces the codewords.
- */
-static void
-deflate_make_huffman_lens_only(const struct deflate_freqs *freqs,
-			       struct deflate_codes *codes)
 {
 	codes->num_used_litlen_syms =
 		deflate_make_huffman_lens(DEFLATE_NUM_LITLEN_SYMS,
@@ -1823,6 +1800,7 @@ deflate_init_static_codes(struct libdeflate_compressor *c)
 		c->freqs.offset[i] = 1 << (5 - 5);
 
 	deflate_make_huffman_codes(&c->freqs, &c->static_codes);
+	deflate_make_huffman_codewords(&c->static_codes);
 }
 
 /* Return the offset slot for the given match offset, using the small map. */
@@ -2270,6 +2248,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 		/* Dynamic Huffman block */
 
 		codes = &c->codes;
+		deflate_make_huffman_codewords(codes);
 		STATIC_ASSERT(CAN_BUFFER(1 + 2 + 5 + 5 + 4 + 3));
 		ADD_BITS(is_final_block, 1);
 		ADD_BITS(DEFLATE_BLOCKTYPE_DYNAMIC_HUFFMAN, 2);
@@ -3344,7 +3323,7 @@ deflate_choose_all_literals(struct libdeflate_compressor *c,
 		c->freqs.litlen[block[i]]++;
 	c->freqs.litlen[DEFLATE_END_OF_BLOCK]++;
 
-	deflate_make_huffman_lens_only(&c->freqs, &c->codes);
+	deflate_make_huffman_codes(&c->freqs, &c->codes);
 }
 
 /*
@@ -3903,7 +3882,7 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 							  cache_ptr);
 	deflate_reset_symbol_frequencies(c);
 	deflate_tally_item_list(c, block_length);
-	deflate_make_huffman_lens_only(&c->freqs, &c->codes);
+	deflate_make_huffman_codes(&c->freqs, &c->codes);
 	return cost;
 }
 
@@ -4060,7 +4039,6 @@ deflate_optimize_and_flush_block(struct libdeflate_compressor *c,
 		deflate_find_min_cost_path(c, block_length, cache_ptr);
 		deflate_set_costs_from_codes(c, &c->codes.lens);
 	}
-	deflate_make_huffman_codewords(&c->codes);
 	deflate_flush_block(c, os, block_begin, block_length, seq,
 			    is_final_block);
 }
