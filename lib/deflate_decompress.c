@@ -1,3 +1,8 @@
+/* [test only] variant defines begin */
+/* variant: ANYPRIO */
+#undef MLSD_TEST_ANY_PRIORITY
+#define MLSD_TEST_ANY_PRIORITY 1
+/* [test only] variant defines end */
 /*
  * deflate_decompress.c - a decompressor for DEFLATE
  *
