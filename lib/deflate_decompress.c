@@ -1,7 +1,15 @@
 /* [test only] variant defines begin */
-/* variant: ANYPRIO */
+/* variant: ANYPRIO_NOLIT */
 #undef MLSD_TEST_ANY_PRIORITY
 #define MLSD_TEST_ANY_PRIORITY 1
+#undef MLSD_MIN_PREV_OUT
+#define MLSD_MIN_PREV_OUT 4096
+#undef MLSD_MIN_IN_BYTES
+#define MLSD_MIN_IN_BYTES 4096
+#undef MLSD_MIN_OUT_BYTES
+#define MLSD_MIN_OUT_BYTES 32768
+#undef MLSD_MIN_LEN_SPACE
+#define MLSD_MIN_LEN_SPACE 0
 /* [test only] variant defines end */
 /*
  * deflate_decompress.c - a decompressor for DEFLATE
