@@ -1,0 +1,76 @@
+name: mlsd-ci
+# Test-only: interleaved A/B timing and differential fuzzing of the
+# multi-lane decoder series below HEAD (scripts/mlsd_ci).  Not for upstream.
+# Trees: 0 = master aa5181e, 1 = mlsd-apple-mini3 as delivered, 2 = MINI3_ANYPRIO, 3 = MINI2_ANYPRIO
+on:
+  push:
+    branches: ['mlsd-ci*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mlsd-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/mlsd_ci/inputs.sh "$RUNNER_TEMP/abin"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { name: mac15-clang-1, runner: macos-15, cc: clang }
+        - { name: mac15-clang-2, runner: macos-15, cc: clang }
+        - { name: mac15-clang-3, runner: macos-15, cc: clang }
+        - { name: mac26-clang-1, runner: macos-26, cc: clang }
+        - { name: mac26-clang-2, runner: macos-26, cc: clang }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 8
+    - uses: actions/download-artifact@v8
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+    - name: Allow user-mode PMU access
+      if: runner.os == 'Linux'
+      run: sudo sysctl -w kernel.perf_event_paranoid=1 || true
+    - name: Time and fuzz (Silesia + enwik8, whole files and streams)
+      env:
+        CC: ${{ matrix.cc }}
+        AB_SERIES: 3
+        FUZZ_DEFS2: "-DMLSD_TEST_ANY_PRIORITY -DMLSD_MIN_BUF_BYTES=0 -DMLSD_MIN_PREV_OUT=0 -DMLSD_MIN_IN_BYTES=0 -DMLSD_MIN_OUT_BYTES=0 -DMLSD_MIN_LEN_SPACE=0"
+      run: bash scripts/mlsd_ci/run.sh "$RUNNER_TEMP/abin" "$RUNNER_TEMP/ab"
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo '```'
+          cat "$RUNNER_TEMP/ab/results.txt" 2>/dev/null || echo "no results"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: ab-${{ matrix.name }}
+        path: |
+          ${{ runner.temp }}/ab/results.txt
+          ${{ runner.temp }}/ab/mlsd-ab.txt
+          ${{ runner.temp }}/ab/diag.txt
+          ${{ runner.temp }}/ab/lanes*.s
+        if-no-files-found: warn
