@@ -1,0 +1,17 @@
+# r8_time plan: PR 478 restructured.  m0 = aa5181e (master), f1 = commits
+# 1-2, f2 = commits 1-5 (PR head), f3 = Z2: full length codewords in struct
+# deflate_codes (static codes: computed once; dynamic codes: computed per used
+# slot by deflate_precompute_huffman_header() for deflate_flush_block()),
+# codewords skipped only in the near-optimal parser's cost passes, and the
+# full code builder kept out of line, f4 = f3 without commit 4, f5 = f3
+# without the full length codeword changes (commit 3).
+seedbase 35001
+series 5
+timeout 150
+
+group small ubuntu-24.04     g2 5 8  real 1:333:3:3 1:1024:3:3 1:4096:3:3 6:333:3:2 6:1024:3:2 6:4096:3:2 12:333:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04     c2 5 8  real 1:333:3:3 1:1024:3:3 1:4096:3:3 6:333:3:2 6:1024:3:2 6:4096:3:2 12:333:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04-arm g2 1 16 real 1:333:3:3 1:1024:3:3 1:4096:3:3 6:1024:3:2 12:1024:3:2
+group small ubuntu-24.04-arm c2 1 16 real 1:333:3:3 1:1024:3:3 1:4096:3:3 6:1024:3:2 12:1024:3:2
+group big   ubuntu-24.04     g2 4 16 real 1:0:3:5 6:0:5:2
+group big   ubuntu-24.04     c2 4 16 real 1:0:3:5 6:0:5:2
