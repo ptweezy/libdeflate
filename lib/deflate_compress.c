@@ -1695,12 +1695,33 @@ deflate_reset_symbol_frequencies(struct libdeflate_compressor *c)
  * Build the literal/length and offset Huffman codes for a DEFLATE block.
  *
  * This takes as input the frequency tables for each alphabet and produces as
- * output the codeword lengths.  deflate_make_huffman_codewords() then produces
- * the codewords.
+ * output a set of tables that map symbols to codewords and codeword lengths.
  */
 static void
 deflate_make_huffman_codes(const struct deflate_freqs *freqs,
 			   struct deflate_codes *codes)
+{
+	deflate_make_huffman_code(DEFLATE_NUM_LITLEN_SYMS,
+				  MAX_LITLEN_CODEWORD_LEN,
+				  freqs->litlen,
+				  codes->lens.litlen,
+				  codes->codewords.litlen);
+
+	deflate_make_huffman_code(DEFLATE_NUM_OFFSET_SYMS,
+				  MAX_OFFSET_CODEWORD_LEN,
+				  freqs->offset,
+				  codes->lens.offset,
+				  codes->codewords.offset);
+}
+
+/*
+ * Like deflate_make_huffman_codes(), but produce only the codeword lengths, as
+ * the near-optimal parser's cost model needs.  deflate_make_huffman_codewords()
+ * then produces the codewords.
+ */
+static void
+deflate_make_huffman_lens_only(const struct deflate_freqs *freqs,
+			       struct deflate_codes *codes)
 {
 	codes->num_used_litlen_syms =
 		deflate_make_huffman_lens(DEFLATE_NUM_LITLEN_SYMS,
@@ -1761,7 +1782,6 @@ deflate_init_static_codes(struct libdeflate_compressor *c)
 		c->freqs.offset[i] = 1 << (5 - 5);
 
 	deflate_make_huffman_codes(&c->freqs, &c->static_codes);
-	deflate_make_huffman_codewords(&c->static_codes);
 }
 
 /* Return the offset slot for the given match offset, using the small map. */
@@ -2003,24 +2023,12 @@ static void
 deflate_compute_full_len_codewords(struct libdeflate_compressor *c,
 				   const struct deflate_codes *codes)
 {
-	unsigned max_slot = ARRAY_LEN(deflate_length_slot_base) - 1;
-	u32 max_len;
 	u32 len;
 
 	STATIC_ASSERT(MAX_LITLEN_CODEWORD_LEN +
 		      DEFLATE_MAX_EXTRA_LENGTH_BITS <= 32);
 
-	/*
-	 * Only the lengths up to the longest one used are needed, and small
-	 * blocks use mostly short ones.
-	 */
-	while (max_slot > 0 &&
-	       codes->lens.litlen[DEFLATE_FIRST_LEN_SYM + max_slot] == 0)
-		max_slot--;
-	max_len = deflate_length_slot_base[max_slot] +
-		  (1U << deflate_extra_length_bits[max_slot]) - 1;
-
-	for (len = DEFLATE_MIN_MATCH_LEN; len <= max_len; len++) {
+	for (len = DEFLATE_MIN_MATCH_LEN; len <= DEFLATE_MAX_MATCH_LEN; len++) {
 		unsigned slot = deflate_length_slot[len];
 		unsigned litlen_sym = DEFLATE_FIRST_LEN_SYM + slot;
 		u32 extra_bits = len - deflate_length_slot_base[slot];
@@ -2096,10 +2104,11 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	 */
 	const u8 *in_next = block_begin;
 	const u8 * const in_end = block_begin + block_length;
-	bitbuf_t bitbuf;
-	unsigned bitcount;
-	u8 *out_next;
-	u8 *out_fast_end;
+	bitbuf_t bitbuf = os->bitbuf;
+	unsigned bitcount = os->bitcount;
+	u8 *out_next = os->next;
+	u8 * const out_fast_end =
+		os->end - MIN(WORDBYTES - 1, os->end - out_next);
 	/*
 	 * The cost for each block type, in bits.  Start with the cost of the
 	 * block header which is 3 bits.
@@ -2114,9 +2123,9 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	ASSERT(block_length >= MIN_BLOCK_LENGTH ||
 	       (is_final_block && block_length > 0));
 	ASSERT(block_length <= MAX_BLOCK_LENGTH);
-	ASSERT(os->bitcount <= 7);
-	ASSERT((os->bitbuf & ~(((bitbuf_t)1 << os->bitcount) - 1)) == 0);
-	ASSERT(os->next <= os->end);
+	ASSERT(bitcount <= 7);
+	ASSERT((bitbuf & ~(((bitbuf_t)1 << bitcount) - 1)) == 0);
+	ASSERT(out_next <= os->end);
 	ASSERT(!os->overflow);
 
 	/* Precompute the precode items and build the precode. */
@@ -2170,7 +2179,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	}
 
 	/* Compute the cost of using uncompressed blocks. */
-	uncompressed_cost += (-(os->bitcount + 3) & 7) + 32 +
+	uncompressed_cost += (-(bitcount + 3) & 7) + 32 +
 			     (40 * (DIV_ROUND_UP(block_length,
 						 UINT16_MAX) - 1)) +
 			     (8 * block_length);
@@ -2183,7 +2192,7 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	best_cost = MIN(dynamic_cost, MIN(static_cost, uncompressed_cost));
 
 	/* If the block isn't going to fit, then stop early. */
-	if (DIV_ROUND_UP(os->bitcount + best_cost, 8) > os->end - os->next) {
+	if (DIV_ROUND_UP(bitcount + best_cost, 8) > os->end - out_next) {
 		os->overflow = true;
 		return;
 	}
@@ -2191,18 +2200,6 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	 * Else, now we know that the block fits, so no further bounds checks on
 	 * the output buffer are required until the next block.
 	 */
-
-	/*
-	 * A dynamic block needs the codewords.  Generate them before loading
-	 * the output bitstream state, which the block output keeps in
-	 * registers, so that it isn't live across the call.
-	 */
-	if (best_cost != uncompressed_cost && best_cost != static_cost)
-		deflate_make_huffman_codewords(&c->codes);
-	bitbuf = os->bitbuf;
-	bitcount = os->bitcount;
-	out_next = os->next;
-	out_fast_end = os->end - MIN(WORDBYTES - 1, os->end - out_next);
 
 	if (best_cost == uncompressed_cost) {
 		/*
@@ -3335,7 +3332,7 @@ deflate_choose_all_literals(struct libdeflate_compressor *c,
 		c->freqs.litlen[block[i]]++;
 	c->freqs.litlen[DEFLATE_END_OF_BLOCK]++;
 
-	deflate_make_huffman_codes(&c->freqs, &c->codes);
+	deflate_make_huffman_lens_only(&c->freqs, &c->codes);
 }
 
 /*
@@ -3894,7 +3891,7 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 							  cache_ptr);
 	deflate_reset_symbol_frequencies(c);
 	deflate_tally_item_list(c, block_length);
-	deflate_make_huffman_codes(&c->freqs, &c->codes);
+	deflate_make_huffman_lens_only(&c->freqs, &c->codes);
 	return cost;
 }
 
@@ -4051,6 +4048,7 @@ deflate_optimize_and_flush_block(struct libdeflate_compressor *c,
 		deflate_find_min_cost_path(c, block_length, cache_ptr);
 		deflate_set_costs_from_codes(c, &c->codes.lens);
 	}
+	deflate_make_huffman_codewords(&c->codes);
 	deflate_flush_block(c, os, block_begin, block_length, seq,
 			    is_final_block);
 }
