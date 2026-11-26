@@ -1401,6 +1401,10 @@ ADD_SUFFIX(decompress_fastloop_unchecked)(struct libdeflate_decompressor * restr
 						    litlen_tablemask, false);
 }
 
+#if MLSD_ENABLED
+#  include "decompress_multilane.h"
+#endif
+
 static ATTRIBUTES enum libdeflate_result
 ADD_SUFFIX(deflate_decompress)(struct libdeflate_decompressor * restrict d,
 			       const void * restrict in, size_t in_nbytes,
@@ -1425,6 +1429,15 @@ ADD_SUFFIX(deflate_decompress)(struct libdeflate_decompressor * restrict d,
 
 	bool is_final_block;
 	unsigned block_type;
+#if MLSD_ENABLED
+	/* see decompress_multilane.h */
+	size_t mlsd_state[2] = { 12 * 16, 256 };
+	size_t prev_block_out = SIZE_MAX;
+	u8 *block_out_start;
+	int mlsd_prio = 0;	/* 0 = unknown, 1 = ok, 2 = low priority */
+	bool mlsd_later;	/* use the lanes after the first 32 KiB */
+	u8 mlsd_lens[DEFLATE_NUM_LITLEN_SYMS + DEFLATE_NUM_OFFSET_SYMS];
+#endif
 	unsigned num_litlen_syms;
 	unsigned num_offset_syms;
 	u32 litlen_tablemask;
@@ -1433,6 +1446,10 @@ ADD_SUFFIX(deflate_decompress)(struct libdeflate_decompressor * restrict d,
 next_block:
 	/* Starting to read the next block */
 	;
+#if MLSD_ENABLED
+	block_out_start = out_next;
+	mlsd_later = false;
+#endif
 
 	STATIC_ASSERT(CAN_CONSUME(1 + 2 + 5 + 5 + 4 + 3));
 	REFILL_BITS();
@@ -1696,6 +1713,46 @@ next_block:
 
 	/* Decompressing a Huffman block (either dynamic or static) */
 
+#if MLSD_ENABLED
+	if (block_type == DEFLATE_BLOCKTYPE_DYNAMIC_HUFFMAN &&
+	    prev_block_out >= MLSD_MIN_PREV_OUT &&
+	    out_end - out_next >= MLSD_MIN_OUT_BYTES &&
+	    in_end - in_next >= MLSD_MIN_IN_BYTES &&
+	    (mlsd_prio != 0 ||
+	     (mlsd_prio = mlsd_low_priority() ? 2 : 1)) &&
+	    mlsd_prio == 1) {
+		/*
+		 * The lanes need DEFLATE_MAX_MATCH_OFFSET bytes of output
+		 * first; until then, the checked fastloop decodes the block.
+		 */
+		if (out_next - (u8 *)out < DEFLATE_MAX_MATCH_OFFSET) {
+			memcpy(mlsd_lens, d->u.l.lens,
+			       num_litlen_syms + num_offset_syms);
+			mlsd_later = true;
+		} else if (ADD_SUFFIX(mlsd_build_tables)(d, num_litlen_syms,
+							 num_offset_syms)) {
+			struct fastloop_ctx ctx = {
+				.out = out,
+				.in_next = in_next,
+				.out_next = out_next,
+				.bitbuf = bitbuf,
+				.bitsleft = bitsleft,
+			};
+			enum fastloop_result res;
+
+			res = ADD_SUFFIX(decompress_multilane)(d, &ctx, in,
+							       in_end, out_end,
+							       mlsd_state);
+			in_next = ctx.in_next;
+			out_next = ctx.out_next;
+			bitbuf = ctx.bitbuf;
+			bitsleft = ctx.bitsleft;
+			if (res == FASTLOOP_BLOCK_DONE)
+				goto block_done;
+		}
+	}
+#endif
+
 	SAFETY_CHECK(ADD_SUFFIX(build_offset_decode_table)(d, num_litlen_syms,
 							   num_offset_syms));
 	/*
@@ -1745,6 +1802,34 @@ have_decode_tables:
 			    ctx.in_next >= in_fastloop_end ||
 			    ctx.out_next >= out_fastloop_end)
 				goto fastloop_done;
+#if MLSD_ENABLED
+			if (mlsd_later &&
+			    out_end - ctx.out_next >= MLSD_MIN_OUT_BYTES) {
+				/*
+				 * The rest of the block with the lanes, whose
+				 * tables replace the litlen decode table.
+				 */
+				memcpy(d->u.l.lens, mlsd_lens,
+				       num_litlen_syms + num_offset_syms);
+				if (ADD_SUFFIX(mlsd_build_tables)(
+					    d, num_litlen_syms,
+					    num_offset_syms)) {
+					res = ADD_SUFFIX(decompress_multilane)(
+						d, &ctx, in, in_end, out_end,
+						mlsd_state);
+					if (res == FASTLOOP_BLOCK_DONE)
+						goto fastloop_done;
+				}
+				SAFETY_CHECK(
+					ADD_SUFFIX(build_litlen_decode_table)(
+						d, num_litlen_syms, true));
+				litlen_tablemask =
+					((u32)1 << d->litlen_tablebits) - 1;
+				if (ctx.in_next >= in_fastloop_end ||
+				    ctx.out_next >= out_fastloop_end)
+					goto fastloop_done;
+			}
+#endif
 		}
 		res = ADD_SUFFIX(decompress_fastloop_unchecked)(
 				d, &ctx, in_fastloop_end, out_fastloop_end,
@@ -1856,6 +1941,9 @@ fastloop_done:
 
 block_done:
 	/* Finished decoding a block */
+#if MLSD_ENABLED
+	prev_block_out = out_next - block_out_start;
+#endif
 
 	if (!is_final_block)
 		goto next_block;

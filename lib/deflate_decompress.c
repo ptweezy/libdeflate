@@ -379,6 +379,25 @@ do {									\
  */
 #define COMPOUND_LITLEN_MIN_OUT_BYTES	8192
 
+/*
+ * Multi-lane speculative decoding of Huffman blocks, see
+ * decompress_multilane.h.  It needs a wide core, so it's enabled only on Apple
+ * arm64; define LIBDEFLATE_NO_MLSD to disable it.
+ */
+#if defined(__APPLE__) && defined(ARCH_ARM64) && !defined(FREESTANDING) && \
+	!defined(LIBDEFLATE_NO_MLSD)
+#  define MLSD_ENABLED		1
+#  define MLSD_LANES		4	/* lanes decoded at once */
+#  ifndef MLSD_ROUND_STEPS	/* (can be overridden for testing) */
+#    define MLSD_ROUND_STEPS	256	/* max steps per lane per round */
+#    define MLSD_CATCHUP	64	/* max extra steps to catch up */
+#  endif
+#  define MLSD_NREC		(MLSD_ROUND_STEPS + MLSD_CATCHUP)
+#  define MLSD_TABLEBITS	12	/* litlen main table bits */
+#else
+#  define MLSD_ENABLED		0
+#endif
+
 /*****************************************************************************
  *                              Huffman decoding                             *
  *****************************************************************************/
@@ -943,6 +962,16 @@ struct libdeflate_decompressor {
 		} l;
 
 		u32 litlen_decode_table[LITLEN_ENOUGH];
+#if MLSD_ENABLED
+		/* decompress_multilane.h's tables, which keep 'lens' intact */
+		struct {
+			u8 lens[DEFLATE_NUM_LITLEN_SYMS +
+				DEFLATE_NUM_OFFSET_SYMS +
+				DEFLATE_MAX_LENS_OVERRUN];
+			u64 lt[LITLEN_ENOUGH];
+			u64 ot[OFFSET_ENOUGH + 256];
+		} mlsd;
+#endif
 	} u;
 
 	u32 offset_decode_table[OFFSET_ENOUGH];
@@ -952,6 +981,12 @@ struct libdeflate_decompressor {
 
 	bool static_codes_loaded;
 	unsigned litlen_tablebits;
+
+#if MLSD_ENABLED
+	/* records and bit positions of the lanes, for 2 rounds */
+	u64 mlsd_recs[2][MLSD_LANES][MLSD_NREC];
+	u16 mlsd_poss[2][MLSD_LANES][MLSD_NREC + 1];
+#endif
 
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
