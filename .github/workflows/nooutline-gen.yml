@@ -1,0 +1,58 @@
+name: nooutline-gen
+# Test-only, not for upstream: does PR 487 with the review feedback applied
+# work with the multi-config CMake generators (Xcode, Ninja Multi-Config)?
+# HEAD~2 = upstream master, HEAD~1 = the revised PR commit, HEAD = this
+# test-only commit.  See scripts/nooutline_gen/probe.sh.
+on:
+  push:
+    branches: ['nooutline-gen*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nooutline-gen-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { image: xcode-27, xcode: /Applications/Xcode_27.2.app }
+        - { image: macos-26, xcode: /Applications/Xcode_26.6.app }
+        - { image: macos-15, xcode: /Applications/Xcode_16.4.app }
+    name: ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 4
+    - name: Tools
+      run: |
+        command -v ninja > /dev/null ||
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ninja
+        ninja --version
+    - name: Probe
+      env:
+        IMAGE: ${{ matrix.image }}
+        XCODE: ${{ matrix.xcode }}
+      run: bash scripts/nooutline_gen/probe.sh "$RUNNER_TEMP/probe"
+    - name: Summary
+      if: always()
+      run: |
+        {
+          echo '```'
+          cat "$RUNNER_TEMP/probe/probe.txt" 2>/dev/null || echo "no results"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: probe-${{ matrix.image }}
+        path: |
+          ${{ runner.temp }}/probe/probe.txt
+          ${{ runner.temp }}/probe/w/*.log
+          ${{ runner.temp }}/probe/w/*.ctest
+        if-no-files-found: warn
+        retention-days: 7
