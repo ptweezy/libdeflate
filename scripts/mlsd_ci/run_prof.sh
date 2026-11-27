@@ -1,7 +1,7 @@
 #!/bin/bash
 # mlsd_ci run_prof.sh - test only: per-block time with the lanes off and on.
 # usage: run_prof.sh CORPUSDIR OUTDIR
-# prof_ship = the x86_64 settings, lanes on any CPU; prof_open = no gates.
+# One binary (the x86_64 settings, lanes on any CPU); see prof.c for the modes.
 set -euo pipefail
 IN=${1:?}; OUT=${2:?}; CC=${CC:-cc}
 HERE=$(cd "$(dirname "$0")" && pwd); TOP=$(cd "$HERE/../.." && pwd)
@@ -18,8 +18,7 @@ cp -r "$TOP/lib" "$TOP/libdeflate.h" "$TOP/common_defs.h" "$OUT/src-prof/"
 python3 "$HERE/prof_patch.py" "$OUT/src-prof"
 P="$OUT/src-prof"
 build() { local name=$1; shift; $CC -O2 -DNDEBUG -std=gnu11 -I"$P" -DMLSD_TEST_ALWAYS_USABLE "$@" "$HERE/prof.c" "$P"/lib/*.c "$P"/lib/x86/*.c -o "$OUT/bin/prof_$name"; }
-build ship
-build open -DMLSD_LANES=4 -DMLSD_INTERLEAVE=0 -DMLSD_GATE32=0 -DMLSD_SKIP_LONG=0 -DMLSD_MIN_PREV_OUT=0
+build x
 $CC -O2 -I"$TOP" "$HERE/mkstream.c" "$TOP"/lib/*.c "$TOP"/lib/x86/*.c -o "$OUT/bin/mkstream"
 SIL="dickens mozilla mr nci ooffice osdb reymont samba sao webster x-ray xml"
 for f in $SIL enwik8; do
@@ -31,9 +30,7 @@ for L in L6 L12 L1; do
 	echo "== $L $(uptime)"
 	for s in streams/*.$L.c0; do
 		f=$(basename "$s" .$L.c0)
-		for v in ship open; do
-			taskset -c ${BENCH_CPU:-2} bin/prof_$v -n 15 "$s" res/$f.$L.$v.csv res/$f.$L.$v.lens
-		done
+		taskset -c ${BENCH_CPU:-2} bin/prof_x -n 15 "$s" res/$f.$L.csv res/$f.$L.lens
 	done
 done
 echo "== done $(uptime)"

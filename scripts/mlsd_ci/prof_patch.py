@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """mlsd_ci prof_patch.py - test only: add per-block timing hooks to a copy of the tree.
 usage: prof_patch.py SRCDIR   (SRCDIR has lib/; changed in place)
-mlsd_prof_mode 0 keeps the lanes off; 1 lets them run where the gates allow."""
+mlsd_prof_mode 0 keeps the lanes off, 1 lets them run where the gates allow,
+2 runs them on every dynamic block they can take (no codespace, long-match or
+previous-block gates).  One binary for all three, so that the code is the same."""
 import sys, os
 src = sys.argv[1]
 def edit(path, pairs):
@@ -27,7 +29,7 @@ edit('lib/decompress_template.h', [
   """	MLSD_PROF_LENS(block_type, d->u.l.lens, num_litlen_syms, num_offset_syms);
 #if USE_MLSD
 	if (block_type == DEFLATE_BLOCKTYPE_DYNAMIC_HUFFMAN && mlsd_prof_mode &&
-	    mlsd.prev_block_out >= MLSD_MIN_PREV_OUT &&""", False),
+	    (mlsd_prof_mode == 2 || mlsd.prev_block_out >= MLSD_MIN_PREV_OUT) &&""", False),
  ("block_done:\n\t/* Finished decoding a block */\n",
   "block_done:\n\t/* Finished decoding a block */\n\tMLSD_PROF_END(out_next, in_next, bitsleft);\n", True),
 ])
@@ -57,17 +59,6 @@ edit('lib/decompress_multilane.h', [
 	mlsd_prof_recs[mlsd_prof_n].lane_out = (unsigned)(out - ctx->out_next);
 	mlsd_prof_recs[mlsd_prof_n].lane_rec = (unsigned)nrec;
 """, False),
- ("""#ifndef MLSD_MIN_PREV_OUT
-#  define MLSD_MIN_BUF_BYTES	524288
-#  define MLSD_MIN_IN_BYTES	4096
-#  define MLSD_MIN_OUT_BYTES	32768
-#  define MLSD_MIN_PREV_OUT	4096
-""", """#ifndef MLSD_MIN_PREV_OUT
-#  define MLSD_MIN_PREV_OUT	4096
-#endif
-#if 1
-#  define MLSD_MIN_BUF_BYTES	524288
-#  define MLSD_MIN_IN_BYTES	4096
-#  define MLSD_MIN_OUT_BYTES	32768
-""", False),
+ ("if (len_space < MLSD_MIN_LEN_SPACE || (MLSD_SKIP_LONG && many_long) ||",
+  "if ((mlsd_prof_mode == 1 && (len_space < MLSD_MIN_LEN_SPACE || (MLSD_SKIP_LONG && many_long))) ||", False),
 ])
