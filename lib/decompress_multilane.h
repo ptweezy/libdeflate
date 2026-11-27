@@ -235,7 +235,7 @@ static NOINLINE ATTRIBUTES bool
 ADD_SUFFIX(mlsd_build_table)(struct mlsd_scratch * restrict s,
 			     u8 * restrict lens, unsigned num_syms, bool litlen)
 {
-	u64 * const t = litlen ? s->lt : s->ot;
+	u64 * const t = s->t + (litlen ? 0 : MLSD_OT);
 	const unsigned tb = litlen ? MLSD_TABLEBITS : OFFSET_TABLEBITS;
 	/* (the subtables start after the main or dummy entries) */
 	unsigned sub_end = litlen ? 1U << MLSD_TABLEBITS :
@@ -385,12 +385,24 @@ do {									\
 #define MLSD_RESOLVE(entry, bits)					\
 do {									\
 	if ((entry) & MLSD_PTR)						\
-		(entry) = MLSD_SUB_ENTRY(s->lt, entry, bits, MLSD_TABLEBITS);\
+		(entry) = MLSD_SUB_ENTRY(s->t, entry, bits, MLSD_TABLEBITS);\
 	(entry) = ((entry) & ~MLSD_SLOW_BITS) +				\
 		  ((((bits) >> (((entry) >> 16) & 63)) &		\
 		    (((entry) >> 24) & 31)) << 50);			\
 	eob |= (((entry) >> 50) & 0x1FF) == MLSD_EOB_LEN;		\
 } while (0)
+
+/*
+ * On x86_64, clang moves each lane's position update past the other lanes'
+ * steps, and with the registers that this takes, it loads the addresses of the
+ * input and of the tables from the stack in every step.  MLSD_PIN() keeps the
+ * update in place.
+ */
+#if defined(__clang__) && defined(ARCH_X86_64)
+#  define MLSD_PIN(v)	__asm__ volatile("" : "+r" (v))
+#else
+#  define MLSD_PIN(v)	(void)0
+#endif
 
 /*
  * Decode the litlen entry (and any offset) at bit position 'p' into the record
@@ -399,19 +411,21 @@ do {									\
 #define MLSD_STEP(in, p, rp)						\
 do {									\
 	const u64 w_ = get_unaligned_le64((in) + ((p) >> 3)) >> ((p) & 7);\
-	u64 e1_ = s->lt[w_ & ((1U << MLSD_TABLEBITS) - 1)];		\
+	u64 e1_ = s->t[w_ & ((1U << MLSD_TABLEBITS) - 1)];		\
 	u64 w1_, e2_;							\
 									\
 	if (unlikely(e1_ & MLSD_SLOW))					\
 		MLSD_RESOLVE(e1_, w_);					\
 	w1_ = w_ >> (e1_ & 63);						\
-	e2_ = s->ot[(w1_ & 0xFF) | (e1_ & MLSD_NOOFF)];			\
+	e2_ = s->t[MLSD_OT + ((w1_ & 0xFF) | (e1_ & MLSD_NOOFF))];	\
 	if (unlikely(e2_ & MLSD_SLOW))					\
-		e2_ = MLSD_SUB_ENTRY(s->ot, e2_, w1_, OFFSET_TABLEBITS);\
+		e2_ = MLSD_SUB_ENTRY(s->t + MLSD_OT, e2_, w1_,		\
+				     OFFSET_TABLEBITS);			\
 	e1_ += (u32)e2_;						\
 	*(rp) = e1_ + (((w1_ >> (e2_ & 63)) & (e2_ >> 32)) << 16);	\
 	put_unaligned_le16((u16)(p), (u8 *)(rp));			\
 	(p) += (e1_ >> 9) & 63;						\
+	MLSD_PIN(p);							\
 } while (0)
 
 /*
@@ -520,7 +534,7 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 	 */
 	const u32 copy64_len = many_long ? 0 : 33;
 
-	/* (s->lt[] has LITLEN_ENOUGH entries) */
+	/* (the litlen table has LITLEN_ENOUGH entries) */
 	STATIC_ASSERT(MLSD_TABLEBITS <= LITLEN_TABLEBITS);
 	/* (the offset table first: the litlen padding overwrites its lens) */
 	if (len_space < MLSD_MIN_LEN_SPACE || (MLSD_SKIP_LONG && many_long) ||

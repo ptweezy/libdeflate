@@ -1035,13 +1035,17 @@ struct mlsd_build_tmp {
  * tables and the block's codeword lengths (which the litlen decode table
  * overwrites in the decompressor), kept at the end of the output buffer
  */
+#define MLSD_OT		LITLEN_ENOUGH
 struct mlsd_scratch {
 	union {
 		u64 recs[1 + MLSD_INTERLEAVE][MLSD_NREC + 1][MLSD_LANES];
 		struct mlsd_build_tmp tmp;
 	} u;
-	u64 lt[LITLEN_ENOUGH];
-	u64 ot[OFFSET_ENOUGH + 256];
+	/*
+	 * The litlen decode table, then at MLSD_OT the offset one: one array,
+	 * see MLSD_PIN()
+	 */
+	u64 t[LITLEN_ENOUGH + OFFSET_ENOUGH + 256];
 	u8 lens[DEFLATE_NUM_LITLEN_SYMS + DEFLATE_NUM_OFFSET_SYMS + 16];
 };
 #endif
