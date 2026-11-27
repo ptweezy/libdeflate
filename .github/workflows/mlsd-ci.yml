@@ -1,0 +1,63 @@
+name: mlsd-ci
+# Test only: time the multi-lane decoder against master on the runners' CPUs
+# (scripts/mlsd_ci/run_bench.sh).  Not for upstream.
+on:
+  push:
+    branches: ['mlsd-ci*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mlsd-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/mlsd_ci/inputs.sh "$RUNNER_TEMP/abin"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+        retention-days: 3
+        compression-level: 1
+  bench:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { name: x86-gcc-1, runner: ubuntu-24.04, cc: gcc }
+        - { name: x86-clang-1, runner: ubuntu-24.04, cc: clang }
+        - { name: x86-gcc-2, runner: ubuntu-24.04, cc: gcc }
+        - { name: x86-clang-2, runner: ubuntu-24.04, cc: clang }
+        - { name: x86-gcc-3, runner: ubuntu-22.04, cc: gcc }
+        - { name: x86-clang-3, runner: ubuntu-22.04, cc: clang }
+        - { name: arm-gcc, runner: ubuntu-24.04-arm, cc: gcc }
+        - { name: arm-clang, runner: ubuntu-24.04-arm, cc: clang }
+        - { name: mac-intel, runner: macos-15-intel, cc: clang }
+        - { name: mac-arm, runner: macos-15, cc: clang }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - uses: actions/download-artifact@v8
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+    - name: Benchmark (Silesia + enwik8)
+      env:
+        CC: ${{ matrix.cc }}
+      run: bash scripts/mlsd_ci/run_bench.sh "$RUNNER_TEMP/abin" "$RUNNER_TEMP/bench"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: bench-${{ matrix.name }}
+        path: ${{ runner.temp }}/bench/res
+        if-no-files-found: warn
