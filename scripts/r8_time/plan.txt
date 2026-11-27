@@ -1,0 +1,20 @@
+# r8_time plan: three small code size cuts.  m0 = 68351dc (master), f1 = the
+# three commits squashed (the PR head's tree).  f1 changes
+# deflate_precompute_huffman_header() (once per block, levels 1-12) and the
+# near-optimal end of block (levels 10-12); its decompressor change isn't
+# timed here.  plc1/plc2 are the placement-only controls.
+seedbase 61001
+series 1
+timeout 120
+
+# 1. Levels 1 and 6 on whole files.
+group big   ubuntu-24.04 c2 2 16 real 1:0:3:5:plc1 6:0:3:2:plc1
+group big   ubuntu-24.04 g2 2 16 real 1:0:3:5:plc1 6:0:3:2:plc1
+
+# 2. 4 KiB inputs, where the per-block code matters most.
+group small ubuntu-24.04 c2 2 16 real 1:4096:3:3 6:4096:3:2 12:4096:3:2
+group small ubuntu-24.04 g2 2 16 real 1:4096:3:3 6:4096:3:2 12:4096:3:2
+
+# 3. Level 12 on whole files.
+group l12   ubuntu-24.04 c2 2 16 real 12:0:3:1:plc2
+group l12   ubuntu-24.04 g2 2 16 real 12:0:3:1:plc2

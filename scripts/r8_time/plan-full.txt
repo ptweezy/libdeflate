@@ -1,0 +1,37 @@
+# r8_time plan for one base: x86-64 and aarch64 runners, gcc -O2 and
+# clang -O2 (see plan.py for the format).  64 shards, about 25 runner-hours
+# (2 h of wall time at 12 jobs in parallel).
+seedbase 1001
+timeout 120
+
+# 1. Large blocks with the validation controls: L1 and L6 on whole files.
+#    L6 gets 5 rounds: its time varies by 1.5-2% from process to process
+#    (where the hash tables land in memory), which only more processes cure.
+#    posK = known added cost (x86: 3 cycles per K bytes; Arm: 2 cycles),
+#    plc1 = placement-only change.
+group big   ubuntu-24.04     g2 6 32 real 1:0:3:5:pos64+plc1 6:0:5:2:pos16+plc1
+group big   ubuntu-24.04     c2 6 32 real 1:0:3:5:pos64+plc1 6:0:5:2:pos16+plc1
+group big   ubuntu-24.04-arm g2 4 32 real 1:0:3:5:pos48+plc1 6:0:5:2:pos12+plc1
+group big   ubuntu-24.04-arm c2 4 32 real 1:0:3:5:pos48+plc1 6:0:5:2:pos12+plc1
+
+# 2. Small blocks: real files, then the adversarial and threshold alphabets.
+group small ubuntu-24.04     g2 3 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04     g2 3 16 adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04     c2 3 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04     c2 3 16 adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04-arm g2 2 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04-arm g2 2 16 adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group small ubuntu-24.04-arm c2 2 16 real 1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+group adv   ubuntu-24.04-arm c2 2 16 adv  1:1024:3:3 1:4096:3:3 6:1024:3:2 6:4096:3:2 12:1024:3:2 12:4096:3:2
+
+# 3. L12 on whole files (slow): more shards, 5 rounds x 1 rep; plc2 is the
+#    placement-only control that L12 never executes.
+group l12   ubuntu-24.04     g2 6 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04     c2 6 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04-arm g2 4 16 real 12:0:5:1:plc2
+group l12   ubuntu-24.04-arm c2 4 16 real 12:0:5:1:plc2
+
+# 4. Order experiment: the local lt.py's rotation instead of random orders.
+ltopts --order rot
+group rot   ubuntu-24.04-arm g2 2 24 real 1:0:4:5 1:1024:4:3
+group rot   ubuntu-24.04     g2 2 24 real 1:0:4:5 1:1024:4:3
