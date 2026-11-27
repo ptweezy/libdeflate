@@ -4106,12 +4106,6 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			memmove(c->p.n.match_cache, cache_ptr,
 				cache_len_rewound * sizeof(*cache_ptr));
 			cache_ptr = &c->p.n.match_cache[cache_len_rewound];
-			deflate_near_optimal_save_stats(c);
-			/*
-			 * Clear the stats for the just-flushed block, leaving
-			 * just the stats for the beginning of the next block.
-			 */
-			deflate_near_optimal_clear_old_stats(c);
 			in_block_begin = in_block_end;
 		} else {
 			/*
@@ -4130,10 +4124,14 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 						is_first, is_final,
 						&prev_block_used_only_literals);
 			cache_ptr = &c->p.n.match_cache[0];
-			deflate_near_optimal_save_stats(c);
-			deflate_near_optimal_init_stats(c);
 			in_block_begin = in_next;
 		}
+		deflate_near_optimal_save_stats(c);
+		/*
+		 * Clear the stats for the just-flushed block, leaving just the
+		 * stats already gathered for the next block (if any).
+		 */
+		deflate_near_optimal_clear_old_stats(c);
 	} while (in_next != in_end && !os->overflow);
 }
 
