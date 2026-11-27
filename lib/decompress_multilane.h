@@ -78,8 +78,8 @@
  *   the scratch remain,
  * - the previous block produced MLSD_MIN_PREV_OUT bytes,
  * - the length codewords take at least MLSD_GATE32/32 of the codespace (the
- *   fastloop does better on runs of literals), and
- * - with MLSD_SKIP_LONG, few of its matches are long.
+ *   fastloop does better on runs of literals), weighted as
+ *   mlsd_weighted_len_space() says if MLSD_GATE_LEN is set.
  */
 #ifndef MLSD_MIN_PREV_OUT
 #  define MLSD_MIN_BUF_BYTES	524288
@@ -189,6 +189,31 @@ mlsd_codespace(const u8 *lens, unsigned first, unsigned num_syms)
 			 ((1U << DEFLATE_MAX_CODEWORD_LEN) - 1);
 	return space;
 }
+
+#if MLSD_GATE_LEN
+/*
+ * The same for the length codewords, each weighted by 1 - (the mean of the
+ * lengths that it codes) / MLSD_GATE_LEN
+ */
+static forceinline s32
+mlsd_weighted_len_space(const u8 *lens, unsigned num_litlen_syms)
+{
+	s32 space = 0;
+	unsigned sym;
+
+	NO_VECTORIZE_LOOP
+	for (sym = DEFLATE_FIRST_LEN_SYM; sym < num_litlen_syms; sym++) {
+		const u32 res = litlen_decode_results[sym];
+		/* (twice the mean length) */
+		const s32 mean2 = 2 * (res >> 16) + (1U << (res & 0x1F)) - 1;
+
+		space += (s32)(((1U << DEFLATE_MAX_CODEWORD_LEN) >> lens[sym]) &
+			       ((1U << DEFLATE_MAX_CODEWORD_LEN) - 1)) *
+			 (2 * MLSD_GATE_LEN - mean2);
+	}
+	return space / (2 * MLSD_GATE_LEN);
+}
+#endif
 
 /*
  * The lane-format entry for symbol 'sym' with codeword length 'len';
@@ -524,20 +549,27 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 	/* The gate on the litlen codeword lengths */
 	const u32 len_space = mlsd_codespace(s->lens, DEFLATE_FIRST_LEN_SYM,
 					     num_litlen_syms);
+#if MLSD_GATE_LEN
+	const s32 gate_space = mlsd_weighted_len_space(s->lens,
+						       num_litlen_syms);
+#else
+	const s32 gate_space = len_space;
+#endif
 	/* Whether many of the block's matches are long */
 	const bool many_long = mlsd_codespace(s->lens, MLSD_LONG_LEN_SYM,
 					      num_litlen_syms) * 8 >= len_space;
 	/*
 	 * Matches of at least this length are copied 64 bytes at once instead
 	 * of 32: all are in a block with many long matches, so that the branch
-	 * on it is predicted.
+	 * on it is predicted.  Not with MLSD_GATE_LEN: few such blocks pass the
+	 * gate then, and clang needs the register (see MLSD_PIN()).
 	 */
-	const u32 copy64_len = many_long ? 0 : 33;
+	const u32 copy64_len = (many_long && !MLSD_GATE_LEN) ? 0 : 33;
 
 	/* (the litlen table has LITLEN_ENOUGH entries) */
 	STATIC_ASSERT(MLSD_TABLEBITS <= LITLEN_TABLEBITS);
 	/* (the offset table first: the litlen padding overwrites its lens) */
-	if (len_space < MLSD_MIN_LEN_SPACE || (MLSD_SKIP_LONG && many_long) ||
+	if (gate_space < (s32)MLSD_MIN_LEN_SPACE ||
 	    !ADD_SUFFIX(mlsd_build_table)(s, s->lens + num_litlen_syms,
 					  state->num_offset_syms, false) ||
 	    !ADD_SUFFIX(mlsd_build_table)(s, s->lens, num_litlen_syms, true))
