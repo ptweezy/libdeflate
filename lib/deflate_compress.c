@@ -1735,14 +1735,16 @@ deflate_precompute_huffman_header(struct libdeflate_compressor *c)
 	/*
 	 * If we're not using the full set of literal/length codeword lengths,
 	 * then temporarily move the offset codeword lengths over so that the
-	 * literal/length and offset codeword lengths are contiguous.
+	 * literal/length and offset codeword lengths are contiguous.  Move all
+	 * of them, including the zeroes past num_offset_syms, since a constant
+	 * size lets the compiler inline the memmove().
 	 */
 	STATIC_ASSERT(offsetof(struct deflate_lens, offset) ==
 		      DEFLATE_NUM_LITLEN_SYMS);
 	if (c->o.precode.num_litlen_syms != DEFLATE_NUM_LITLEN_SYMS) {
 		memmove((u8 *)&c->codes.lens + c->o.precode.num_litlen_syms,
 			(u8 *)&c->codes.lens + DEFLATE_NUM_LITLEN_SYMS,
-			c->o.precode.num_offset_syms);
+			DEFLATE_NUM_OFFSET_SYMS);
 	}
 
 	/*
@@ -1774,7 +1776,7 @@ deflate_precompute_huffman_header(struct libdeflate_compressor *c)
 	if (c->o.precode.num_litlen_syms != DEFLATE_NUM_LITLEN_SYMS) {
 		memmove((u8 *)&c->codes.lens + DEFLATE_NUM_LITLEN_SYMS,
 			(u8 *)&c->codes.lens + c->o.precode.num_litlen_syms,
-			c->o.precode.num_offset_syms);
+			DEFLATE_NUM_OFFSET_SYMS);
 	}
 }
 
@@ -4104,12 +4106,6 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			memmove(c->p.n.match_cache, cache_ptr,
 				cache_len_rewound * sizeof(*cache_ptr));
 			cache_ptr = &c->p.n.match_cache[cache_len_rewound];
-			deflate_near_optimal_save_stats(c);
-			/*
-			 * Clear the stats for the just-flushed block, leaving
-			 * just the stats for the beginning of the next block.
-			 */
-			deflate_near_optimal_clear_old_stats(c);
 			in_block_begin = in_block_end;
 		} else {
 			/*
@@ -4128,10 +4124,14 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 						is_first, is_final,
 						&prev_block_used_only_literals);
 			cache_ptr = &c->p.n.match_cache[0];
-			deflate_near_optimal_save_stats(c);
-			deflate_near_optimal_init_stats(c);
 			in_block_begin = in_next;
 		}
+		deflate_near_optimal_save_stats(c);
+		/*
+		 * Clear the stats for the just-flushed block, leaving just the
+		 * stats already gathered for the next block (if any).
+		 */
+		deflate_near_optimal_clear_old_stats(c);
 	} while (in_next != in_end && !os->overflow);
 }
 
