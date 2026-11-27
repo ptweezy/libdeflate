@@ -84,6 +84,7 @@ static const struct cpu_feature x86_cpu_feature_table[] = {
 	{X86_CPU_FEATURE_VPCLMULQDQ,	"vpclmulqdq"},
 	{X86_CPU_FEATURE_AVX512VNNI,	"avx512_vnni"},
 	{X86_CPU_FEATURE_AVXVNNI,	"avx_vnni"},
+	{X86_CPU_FEATURE_MLSD,		"mlsd"},
 };
 
 LIBDEFLATE_ATOMIC(u32) libdeflate_x86_cpu_features = 0;
@@ -134,6 +135,20 @@ allow_512bit_vectors(const u32 manufacturer[3], u32 family, u32 model)
 		return false;
 	}
 	return true;
+}
+
+/*
+ * Use multi-lane decoding only on the CPUs it has been measured to help on: so
+ * far AMD Zen 5.  It needs a core that keeps several lanes in flight and an L1
+ * data cache that holds their tables.
+ */
+static inline bool
+allow_mlsd(const u32 manufacturer[3], u32 family)
+{
+#ifdef TEST_SUPPORT__DO_NOT_USE
+	return true;
+#endif
+	return memcmp(manufacturer, "AuthenticAMD", 12) == 0 && family >= 0x1a;
 }
 
 /* Initialize libdeflate_x86_cpu_features. */
@@ -201,6 +216,10 @@ void libdeflate_init_x86_cpu_features(void)
 				features |= X86_CPU_FEATURE_BMI2;
 		}
 	}
+
+	if ((features & X86_CPU_FEATURE_BMI2) &&
+	    allow_mlsd(manufacturer, family))
+		features |= X86_CPU_FEATURE_MLSD;
 
 	if ((xcr0 & 0x6) == 0x6) {
 		if (b & (1 << 5))
