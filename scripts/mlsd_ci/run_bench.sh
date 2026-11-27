@@ -2,8 +2,8 @@
 # mlsd_ci run_bench.sh - test only: time master against this tree on a runner.
 # usage: run_bench.sh CORPUSDIR OUTDIR
 # Builds: master (aa5181e), new (this tree as it ships; the lanes are off on
-# CPUs it doesn't list, so there it is a control for code placement), forced
-# (this tree with -DMLSD_TEST_ALWAYS_USABLE: the lanes on any CPU).
+# CPUs it doesn't list, so there it is a control for code placement), and
+# builds with the lanes on any CPU (-DMLSD_TEST_ALWAYS_USABLE), see below.
 set -euo pipefail
 IN=${1:?}; OUT=${2:?}; CC=${CC:-cc}
 HERE=$(cd "$(dirname "$0")" && pwd); TOP=$(cd "$HERE/../.." && pwd)
@@ -27,9 +27,15 @@ build() { # name srcdir flags...
 	local name=$1 src=$2; shift 2
 	$CC -O2 -DNDEBUG -std=gnu11 -I"$src" "$@" "$HERE/dbench.c" "$src"/lib/*.c "$src"/lib/$ARCH/*.c -o "$OUT/bin/dbench_$name"
 }
+# x86: f10 = the lanes on any CPU, gate 10/32, long-match blocks included;
+# f10s, f12s, f14s = long-match blocks skipped, gate 10/32, 12/32, 14/32
+X="-DMLSD_TEST_ALWAYS_USABLE -DMLSD_LANES=4 -DMLSD_INTERLEAVE=0"
 build master "$OUT/src-master"
 build new "$TOP"
-build forced "$TOP" -DMLSD_TEST_ALWAYS_USABLE
+build f10 "$TOP" $X -DMLSD_GATE32=10 -DMLSD_SKIP_LONG=0
+build f10s "$TOP" $X -DMLSD_GATE32=10 -DMLSD_SKIP_LONG=1
+build f12s "$TOP" $X -DMLSD_GATE32=12 -DMLSD_SKIP_LONG=1
+build f14s "$TOP" $X -DMLSD_GATE32=14 -DMLSD_SKIP_LONG=1
 $CC -O2 -I"$TOP" "$HERE/mkstream.c" "$TOP"/lib/*.c "$TOP"/lib/$ARCH/*.c -o "$OUT/bin/mkstream"
 SIL="dickens mozilla mr nci ooffice osdb reymont samba sao webster x-ray xml"
 for f in $SIL enwik8; do
@@ -41,7 +47,7 @@ cd "$OUT"
 export BENCH_CPU=${BENCH_CPU:-2}
 for l in 6 1; do
 	echo "== L$l $(uptime)" | tee -a res/bench.txt
-	python3 tools/abn.py -o res/L$l.json -r 5 -n 5 -ref master -b master,new,forced -s .L$l.c0 in/* | tee -a res/bench.txt
+	python3 tools/abn.py -o res/L$l.json -r 5 -n 5 -ref master -b master,new,f10,f10s,f12s,f14s -s .L$l.c0 in/* | tee -a res/bench.txt
 done
 echo "== L12 $(uptime)" | tee -a res/bench.txt
-python3 tools/abn.py -o res/L12.json -r 5 -n 5 -ref master -b master,new,forced -s .L12.c0 $(for f in $SIL; do echo in/$f; done) | tee -a res/bench.txt
+python3 tools/abn.py -o res/L12.json -r 5 -n 5 -ref master -b master,new,f10,f10s,f12s,f14s -s .L12.c0 $(for f in $SIL; do echo in/$f; done) | tee -a res/bench.txt
