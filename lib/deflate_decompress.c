@@ -395,17 +395,20 @@ do {									\
     * MLSD_INTERLEAVE, a round's records are executed during the next round's
     * steps instead of right away, which is slower on x86_64.  The lanes
     * decode a block if its length codewords take at least MLSD_GATE32 32nds
-    * of the codespace: the fastloop does better on runs of literals.
+    * of the codespace: the fastloop does better on runs of literals.  With
+    * MLSD_SKIP_LONG, they also leave it the blocks with many long matches.
     */
 #  ifndef MLSD_LANES		/* (can be overridden for testing) */
 #    ifdef ARCH_X86_64
 #      define MLSD_LANES	4
 #      define MLSD_INTERLEAVE	0
 #      define MLSD_GATE32	10
+#      define MLSD_SKIP_LONG	1
 #    else
 #      define MLSD_LANES	6
 #      define MLSD_INTERLEAVE	1
 #      define MLSD_GATE32	7
+#      define MLSD_SKIP_LONG	0
 #    endif
 #  endif
 #  ifndef MLSD_ROUND_STEPS	/* (can be overridden for testing) */

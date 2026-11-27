@@ -76,9 +76,10 @@
  *   soon to pay off on highly compressible data),
  * - MLSD_MIN_IN_BYTES of input and MLSD_MIN_OUT_BYTES of output space before
  *   the scratch remain,
- * - the previous block produced MLSD_MIN_PREV_OUT bytes, and
+ * - the previous block produced MLSD_MIN_PREV_OUT bytes,
  * - the length codewords take at least MLSD_GATE32/32 of the codespace (the
- *   fastloop does better on runs of literals).
+ *   fastloop does better on runs of literals), and
+ * - with MLSD_SKIP_LONG, few of its matches are long.
  */
 #ifndef MLSD_MIN_PREV_OUT
 #  define MLSD_MIN_BUF_BYTES	524288
@@ -509,19 +510,20 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 	/* The gate on the litlen codeword lengths */
 	const u32 len_space = mlsd_codespace(s->lens, DEFLATE_FIRST_LEN_SYM,
 					     num_litlen_syms);
+	/* Whether many of the block's matches are long */
+	const bool many_long = mlsd_codespace(s->lens, MLSD_LONG_LEN_SYM,
+					      num_litlen_syms) * 8 >= len_space;
 	/*
 	 * Matches of at least this length are copied 64 bytes at once instead
-	 * of 32: all are if many of the block's matches are long, so that the
-	 * branch on it is predicted.
+	 * of 32: all are in a block with many long matches, so that the branch
+	 * on it is predicted.
 	 */
-	const u32 copy64_len = mlsd_codespace(s->lens, MLSD_LONG_LEN_SYM,
-					      num_litlen_syms) * 8 >= len_space ?
-			       0 : 33;
+	const u32 copy64_len = many_long ? 0 : 33;
 
 	/* (s->lt[] has LITLEN_ENOUGH entries) */
 	STATIC_ASSERT(MLSD_TABLEBITS <= LITLEN_TABLEBITS);
 	/* (the offset table first: the litlen padding overwrites its lens) */
-	if (len_space < MLSD_MIN_LEN_SPACE ||
+	if (len_space < MLSD_MIN_LEN_SPACE || (MLSD_SKIP_LONG && many_long) ||
 	    !ADD_SUFFIX(mlsd_build_table)(s, s->lens + num_litlen_syms,
 					  state->num_offset_syms, false) ||
 	    !ADD_SUFFIX(mlsd_build_table)(s, s->lens, num_litlen_syms, true))
