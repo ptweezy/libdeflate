@@ -30,26 +30,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - { name: x86-clang-1, runner: ubuntu-24.04, cc: clang }
-        - { name: x86-gcc-2, runner: ubuntu-22.04, cc: gcc }
-        - { name: x86-gcc-3, runner: ubuntu-24.04, cc: gcc }
+        - { name: x86-gcc-1, runner: ubuntu-22.04, cc: gcc }
+        - { name: x86-clang-2, runner: ubuntu-22.04, cc: clang }
+        - { name: x86-gcc-3, runner: ubuntu-22.04, cc: gcc }
         - { name: x86-clang-4, runner: ubuntu-22.04, cc: clang }
-        - { name: x86-clang-5, runner: ubuntu-24.04, cc: clang }
-        - { name: x86-gcc-6, runner: ubuntu-22.04, cc: gcc }
-        - { name: x86-gcc-7, runner: ubuntu-24.04, cc: gcc }
+        - { name: x86-gcc-5, runner: ubuntu-22.04, cc: gcc }
+        - { name: x86-clang-6, runner: ubuntu-22.04, cc: clang }
+        - { name: x86-gcc-7, runner: ubuntu-22.04, cc: gcc }
         - { name: x86-clang-8, runner: ubuntu-22.04, cc: clang }
-        - { name: x86-clang-9, runner: ubuntu-24.04, cc: clang }
-        - { name: x86-gcc-10, runner: ubuntu-22.04, cc: gcc }
+        - { name: x86-gcc-9, runner: ubuntu-22.04, cc: gcc }
+        - { name: x86-clang-10, runner: ubuntu-22.04, cc: clang }
         - { name: x86-gcc-11, runner: ubuntu-24.04, cc: gcc }
-        - { name: x86-clang-12, runner: ubuntu-22.04, cc: clang }
-        - { name: x86-clang-13, runner: ubuntu-24.04, cc: clang }
-        - { name: x86-gcc-14, runner: ubuntu-22.04, cc: gcc }
-        - { name: x86-gcc-15, runner: ubuntu-24.04, cc: gcc }
-        - { name: x86-clang-16, runner: ubuntu-22.04, cc: clang }
+        - { name: x86-clang-12, runner: ubuntu-24.04, cc: clang }
+        - { name: x86-gcc-13, runner: ubuntu-24.04, cc: gcc }
+        - { name: x86-clang-14, runner: ubuntu-24.04, cc: clang }
         - { name: arm-gcc-1, runner: ubuntu-24.04-arm, cc: gcc }
         - { name: arm-clang-2, runner: ubuntu-24.04-arm, cc: clang }
-        - { name: arm-gcc-3, runner: ubuntu-22.04-arm, cc: gcc }
-        - { name: arm-clang-4, runner: ubuntu-22.04-arm, cc: clang }
+        - { name: arm-gcc-3, runner: ubuntu-24.04-arm, cc: gcc }
+        - { name: arm-clang-4, runner: ubuntu-24.04-arm, cc: clang }
+        - { name: arm-gcc-5, runner: ubuntu-22.04-arm, cc: gcc }
+        - { name: arm-clang-6, runner: ubuntu-22.04-arm, cc: clang }
         - { name: mac-intel, runner: macos-15-intel, cc: clang }
         - { name: mac-arm, runner: macos-15, cc: clang }
     name: ${{ matrix.name }}
