@@ -1,0 +1,51 @@
+--- a/lib/decompress_multilane.h	2026-11-27 20:42:57.761140061 -0500
++++ b/lib/decompress_multilane.h	2026-11-27 20:42:57.813023820 -0500
+@@ -398,9 +398,9 @@
+ 
+ /* Keeps x86_64 clang from moving the update of p past the other lanes' steps */
+ #if defined(__clang__) && defined(ARCH_X86_64)
+-#  define MLSD_PIN(p)	__asm__ volatile("" : "+r" (p))
++#  define MLSD_ADVANCE(p, n)	__asm__ volatile("add {%1, %0|%0, %1}" : "+r" (p) : "r" ((u64)(n)) : "cc")
+ #else
+-#  define MLSD_PIN(p)	(void)0
++#  define MLSD_ADVANCE(p, n)	((p) += (n))
+ #endif
+ 
+ /*
+@@ -423,8 +423,7 @@
+ 	e1_ += (u32)e2_;						\
+ 	*(rp) = e1_ + (((w1_ >> (e2_ & 63)) & (e2_ >> 32)) << 16);	\
+ 	put_unaligned_le16((u16)(p), (u8 *)(rp));			\
+-	(p) += (e1_ >> 9) & 63;						\
+-	MLSD_PIN(p);							\
++	MLSD_ADVANCE(p, (e1_ >> 9) & 63);					\
+ } while (0)
+ 
+ /*
+@@ -561,7 +560,8 @@
+ 				    margin;
+ 		u64 p[MLSD_LANES];
+ 		bool more = true;
+-		unsigned n, cnt;
++		u64 *rp = recs[0];
++		unsigned cnt;
+ 		int i;
+ 
+ 		if (end_pos + (MLSD_LANES - 1) * dist > in_limit) {
+@@ -571,13 +571,13 @@
+ 		for (i = 0; i < MLSD_LANES; i++)
+ 			p[i] = end_pos + (u64)i * dist;
+ 		/* ... while executing the verified records of the last one. */
+-		for (n = 0, cnt = nsteps; ; cnt += MLSD_EXTEND) {
++		for (cnt = nsteps; ; cnt += MLSD_EXTEND) {
+ 			unsigned lo = 0;
+ 
+-			for (; n < cnt; n++) {
++			for (; rp < recs[cnt]; rp += MLSD_LANES) {
+ 				MLSD_UNROLL_LOOP
+ 				for (i = 0; i < MLSD_LANES; i++)
+-					MLSD_STEP(in, p[i], &recs[n][i]);
++					MLSD_STEP(in, p[i], &rp[i]);
+ #if MLSD_INTERLEAVE
+ 				if (xp != NULL) {
+ 					size_t k = r;
