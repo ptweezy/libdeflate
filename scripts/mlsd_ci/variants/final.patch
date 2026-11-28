@@ -1,0 +1,97 @@
+diff --git a/lib/decompress_multilane.h b/lib/decompress_multilane.h
+index f167370..a3dfcdb 100644
+--- a/lib/decompress_multilane.h
++++ b/lib/decompress_multilane.h
+@@ -396,11 +396,12 @@ do {									\
+ 	eob |= (((entry) >> 50) & 0x1FF) == MLSD_EOB_LEN;		\
+ } while (0)
+ 
+-/* Keeps x86_64 clang from moving the update of p past the other lanes' steps */
++/* p += n, in place: x86_64 clang moves the update otherwise, or copies p */
+ #if defined(__clang__) && defined(ARCH_X86_64)
+-#  define MLSD_PIN(p)	__asm__ volatile("" : "+r" (p))
++#  define MLSD_ADVANCE(p, n)	\
++	__asm__ volatile("add {%1, %0|%0, %1}" : "+r" (p) : "r" (n))
+ #else
+-#  define MLSD_PIN(p)	(void)0
++#  define MLSD_ADVANCE(p, n)	((p) += (n))
+ #endif
+ 
+ /*
+@@ -409,7 +410,7 @@ do {									\
+  */
+ #define MLSD_STEP(in, p, rp)						\
+ do {									\
+-	const u64 w_ = get_unaligned_le64((in) + ((p) >> 3)) >> ((p) & 7);\
++	const u64 w_ = get_unaligned_le64(MLSD_ADDR(in, p)) >> ((p) & 7);\
+ 	u64 e1_ = s->lt[w_ & ((1U << MLSD_TABLEBITS) - 1)];		\
+ 	u64 w1_, e2_;							\
+ 									\
+@@ -423,8 +424,7 @@ do {									\
+ 	e1_ += (u32)e2_;						\
+ 	*(rp) = e1_ + (((w1_ >> (e2_ & 63)) & (e2_ >> 32)) << 16);	\
+ 	put_unaligned_le16((u16)(p), (u8 *)(rp));			\
+-	(p) += (e1_ >> 9) & 63;						\
+-	MLSD_PIN(p);							\
++	MLSD_ADVANCE(p, (e1_ >> 9) & 63);				\
+ } while (0)
+ 
+ /*
+@@ -503,10 +503,10 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
+ 	struct mlsd_scratch * const s = (struct mlsd_scratch *)state->scratch;
+ 	const unsigned num_litlen_syms = state->num_litlen_syms;
+ 	const u8 * const out_limit = (const u8 *)s - MLSD_OUT_MARGIN;
+-	/* (bit positions in the input are 64-bit) */
+-	const u64 in_limit = (u64)(in_end - in) * 8 - MLSD_IN_MARGIN;
++	/* (bit positions are 64-bit, from address 0 on x86_64: MLSD_ADDR()) */
++	const u64 in_limit = MLSD_BITPOS(in, in_end) - MLSD_IN_MARGIN;
+ 	u8 *out = ctx->out_next;
+-	u64 end_pos = (u64)(ctx->in_next - in) * 8 - (u8)ctx->bitsleft;
++	u64 end_pos = MLSD_BITPOS(in, ctx->in_next) - (u8)ctx->bitsleft;
+ 	size_t rate16 = state->rate16 + 12 * 16, margin = state->margin + 256;
+ 	size_t nrec = 0, total = 0;
+ 	/*
+@@ -661,9 +661,9 @@ stopped:
+ 	}
+ 	state->rate16 = rate16 - 12 * 16;
+ 	state->margin = margin - 256;
+-	ctx->bitbuf = get_unaligned_leword(in + (end_pos >> 3)) >>
++	ctx->bitbuf = get_unaligned_leword(MLSD_ADDR(in, end_pos)) >>
+ 		      (end_pos & 7);
+-	ctx->in_next = in + (end_pos >> 3) + sizeof(bitbuf_t) - 1;
++	ctx->in_next = MLSD_ADDR(in, end_pos) + sizeof(bitbuf_t) - 1;
+ 	ctx->bitsleft = (MAX_BITSLEFT & ~7) - (end_pos & 7);
+ 	ctx->out_next = out;
+ 	return res;
+diff --git a/lib/deflate_decompress.c b/lib/deflate_decompress.c
+index 72a742e..019ce01 100644
+--- a/lib/deflate_decompress.c
++++ b/lib/deflate_decompress.c
+@@ -401,7 +401,7 @@ do {									\
+     */
+ #  ifndef MLSD_LANES		/* (can be overridden for testing) */
+ #    ifdef ARCH_X86_64
+-#      define MLSD_LANES	4
++#      define MLSD_LANES	5
+ #      define MLSD_INTERLEAVE	0
+ #      define MLSD_GATE32	6
+ #      define MLSD_GATE_LEN	18
+@@ -1041,13 +1041,17 @@ struct mlsd_scratch {
+ 		u64 recs[1 + MLSD_INTERLEAVE][MLSD_NREC + 1][MLSD_LANES];
+ 		struct mlsd_build_tmp tmp;
+ 	} u;
+-#ifdef ARCH_X86_64	/* one array: one register for both tables */
++#ifdef ARCH_X86_64	/* one register for both tables, none for the input */
+ 	u64 lt[LITLEN_ENOUGH + OFFSET_ENOUGH + 256];
+ #  define MLSD_OT(s, i)	((s)->lt[LITLEN_ENOUGH + (i)])
++#  define MLSD_ADDR(in, pos)	((const u8 *)(uintptr_t)((pos) >> 3))
++#  define MLSD_BITPOS(in, p)	((u64)(uintptr_t)(p) * 8)
+ #else
+ 	u64 lt[LITLEN_ENOUGH];
+ 	u64 ot[OFFSET_ENOUGH + 256];
+ #  define MLSD_OT(s, i)	((s)->ot[i])
++#  define MLSD_ADDR(in, pos)	((in) + ((pos) >> 3))
++#  define MLSD_BITPOS(in, p)	((u64)((p) - (in)) * 8)
+ #endif
+ 	u8 lens[DEFLATE_NUM_LITLEN_SYMS + DEFLATE_NUM_OFFSET_SYMS + 16];
+ };
