@@ -169,8 +169,17 @@
  */
 
 #include "lib_common.h"
+#include "arm/cpu_features.h"
+#include "x86/cpu_features.h"
 #include "crc32_multipliers.h"
 #include "crc32_tables.h"
+
+/* Share crc32_slice8_table (same first 256 entries) when it's built anyway. */
+#if ((defined(ARCH_X86_32) || defined(ARCH_X86_64)) && \
+     !HAVE_PCLMULQDQ_NATIVE) || \
+    ((defined(ARCH_ARM32) || defined(ARCH_ARM64)) && !HAVE_PMULL_NATIVE)
+#  define crc32_slice1_table	crc32_slice8_table
+#endif
 
 /* This is the default implementation.  It uses the slice-by-8 method. */
 static u32 MAYBE_UNUSED
