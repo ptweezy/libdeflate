@@ -1,0 +1,31 @@
+name: mlsd-ci
+# Test only: compile the multi-lane decoder with every gcc and clang on the
+# Ubuntu runners and disassemble it (scripts/mlsd_ci/asm.sh).  Not for upstream.
+on:
+  push:
+    branches: ['mlsd-ci*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mlsd-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  asm:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04]
+    name: asm-${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Compile and disassemble
+      run: bash scripts/mlsd_ci/asm.sh "$RUNNER_TEMP/asm"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: asm-${{ matrix.runner }}
+        path: ${{ runner.temp }}/asm/out
+        retention-days: 5
