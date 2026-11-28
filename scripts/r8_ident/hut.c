@@ -14,6 +14,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef R8_USED_LIST
+/*
+ * In these trees deflate_make_huffman_code() is for the precode only, so build
+ * the code of any alphabet from the two functions that it calls.
+ */
+static void
+r8_make_huffman_code(unsigned num_syms, unsigned max_codeword_len,
+		     const u32 freqs[], u8 lens[], u32 codewords[])
+{
+	unsigned len_counts[DEFLATE_MAX_CODEWORD_LEN + 1];
+	u16 used[DEFLATE_MAX_NUM_SYMS];
+	unsigned num_used_syms =
+		deflate_make_huffman_lens(num_syms, max_codeword_len, freqs,
+					  lens, codewords, len_counts, used);
+
+	deflate_gen_huffman_codewords(max_codeword_len, lens, codewords,
+				      len_counts, used, num_used_syms);
+}
+#define deflate_make_huffman_code r8_make_huffman_code
+#endif
+
 static u64 hs;
 static u64 hr(void) { hs ^= hs << 13; hs ^= hs >> 7; hs ^= hs << 17; return hs; }
 static u32 hn(u32 n) { return n ? (u32)(hr() % n) : 0; }

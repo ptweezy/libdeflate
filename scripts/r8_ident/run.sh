@@ -129,6 +129,9 @@ build_tree() {
 	cd "$W/src/$t" || return 1
 	objs=
 	objs_nodc=
+	# Trees that list the used symbols: see R8_USED_LIST in hut.c and utd.c.
+	ud=
+	grep -q 'unsigned len_counts\[\], u16 used\[\])' lib/deflate_compress.c && ud=-DR8_USED_LIST
 	for f in lib/*.c lib/*/*.c; do
 		n=$(echo "$f" | tr '/.' '__')
 		if [ $MSVC = 1 ]; then
@@ -147,10 +150,10 @@ build_tree() {
 		*) lo=$objs ;;
 		esac
 		if [ $MSVC = 1 ]; then
-			"$CC" -nologo $CFLAGS -I. "-Fo$o/tool_$tool.obj" \
+			"$CC" -nologo $CFLAGS $ud -I. "-Fo$o/tool_$tool.obj" \
 				"-Fe$W/bin/$tool-$t.exe" "$HERE/$tool.c" $lo || return 1
 		else
-			"$CC" $CFLAGS -std=gnu11 -w -I. -o "$W/bin/$tool-$t$EXE" \
+			"$CC" $CFLAGS $ud -std=gnu11 -w -I. -o "$W/bin/$tool-$t$EXE" \
 				"$HERE/$tool.c" $lo || return 1
 		fi
 	done
