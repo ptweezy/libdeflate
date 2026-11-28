@@ -27,13 +27,13 @@ build() { # name srcdir flags...
 	local name=$1 src=$2; shift 2
 	$CC -O2 -DNDEBUG -std=gnu11 -I"$src" "$@" "$HERE/dbench.c" "$src"/lib/*.c "$src"/lib/$ARCH/*.c -o "$OUT/bin/dbench_$name"
 }
-# new = this tree as it ships; f = the lanes on any CPU (4 lanes); f5 to f8
-# = 5 to 8 lanes, all executed after each round, with the x86_64 gate.
+# new = this tree as it ships; f = the lanes on any CPU (4 lanes); f5 to f7
+# = 5 to 7 lanes, all executed after each round, with the x86_64 gate.
 G="-DMLSD_TEST_ALWAYS_USABLE -DMLSD_INTERLEAVE=0 -DMLSD_GATE32=6 -DMLSD_GATE_LEN=18"
 build master "$OUT/src-master"
 build new "$TOP"
 build f "$TOP" -DMLSD_TEST_ALWAYS_USABLE
-for n in 5 6 7 8; do
+for n in 5 6 7; do
 	build f$n "$TOP" $G -DMLSD_LANES=$n
 	$CC -O2 -DNDEBUG -std=gnu11 -I"$TOP" $G -DMLSD_LANES=$n -c "$TOP/lib/deflate_decompress.c" -o "$OUT/dd_f$n.o"
 	{ objdump -d --no-show-raw-insn -M intel "$OUT/dd_f$n.o" 2>/dev/null || true; } | awk '/<decompress_multilane_bmi2>:/{p=1} p&&/^$/{exit} p' > "$OUT/ml_f$n.s" || true
@@ -53,7 +53,7 @@ cd "$OUT"
 export BENCH_CPU=${BENCH_CPU:-2}
 for l in 6 1; do
 	echo "== L$l $(uptime)" | tee -a res/bench.txt
-	python3 tools/abn.py -o res/L$l.json -r 5 -n 5 -ref master -b master,new,f,f5,f6,f7,f8 -s .L$l.c0 in/* | tee -a res/bench.txt
+	python3 tools/abn.py -o res/L$l.json -r 5 -n 5 -ref master -b master,new,f,f5,f6,f7 -s .L$l.c0 in/* | tee -a res/bench.txt
 done
 echo "== L12 $(uptime)" | tee -a res/bench.txt
-python3 tools/abn.py -o res/L12.json -r 5 -n 5 -ref master -b master,new,f,f5,f6,f7,f8 -s .L12.c0 $(for f in $SIL; do echo in/$f; done) | tee -a res/bench.txt
+python3 tools/abn.py -o res/L12.json -r 5 -n 5 -ref master -b master,new,f,f5,f6,f7 -s .L12.c0 $(for f in $SIL; do echo in/$f; done) | tee -a res/bench.txt
