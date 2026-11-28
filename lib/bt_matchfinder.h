@@ -364,7 +364,7 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 		 * "greater than" side and continue to its left child.
 		 */
 		*pending[lt] = cur_node;
-		pending[lt] = lt ? &children[1] : &children[0];
+		pending[lt] = &children[lt];
 		best_side_len[lt] = len;
 		cur_node = next_node;
 		start = prev_len;
