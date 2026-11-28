@@ -1,0 +1,11 @@
+--- a/lib/decompress_multilane.h	2026-11-27 20:55:38.050726527 -0500
++++ b/lib/decompress_multilane.h	2026-11-27 20:55:38.051668008 -0500
+@@ -63,7 +63,7 @@
+ #endif
+ #define MLSD_EOB_LEN		511
+ #define MLSD_LONG_LEN_SYM	273	/* the first symbol of a length over 34 */
+-#define MLSD_DUMMY_OFF		4096
++#define MLSD_DUMMY_OFF		2048
+ #define MLSD_MAX_STEP_BITS	(LENGTH_MAXBITS + OFFSET_MAXBITS)
+ #define MLSD_MAX_REC_OUT	(2 + DEFLATE_MAX_MATCH_LEN)
+ /* The last lane starts at least this many bits before the end of the input */

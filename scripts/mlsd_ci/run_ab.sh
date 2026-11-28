@@ -1,6 +1,7 @@
 #!/bin/bash
 # mlsd_ci run_ab.sh - test only: time master, old (the lanes at $OLD) and new
-# (this tree) on a runner.  Where the lanes are on as shipped at $OLD: levels
+# (this tree) on a runner, and this tree with each scripts/mlsd_ci/variants/NAME.patch
+# (build v_NAME).  Where the lanes are on as shipped at $OLD: levels
 # 6, 1 and 12.  Elsewhere: old and new with the lanes forced on, level 6.
 # usage: run_ab.sh CORPUSDIR OUTDIR
 set -euo pipefail
@@ -34,6 +35,14 @@ F=; [ $ON = 1 ] || F=-DMLSD_TEST_ALWAYS_USABLE
 build master "$OUT/src-master"
 build old "$OUT/src-old" $F
 build new "$TOP" $F
+B=master,old,new
+for v in $(ls "$HERE/variants" 2> /dev/null | sed -n 's/\.patch$//p'); do
+	mkdir -p "$OUT/src-$v"
+	git -C "$TOP" archive HEAD lib common_defs.h libdeflate.h | tar -x -C "$OUT/src-$v"
+	patch -s -d "$OUT/src-$v" -p1 < "$HERE/variants/$v.patch"
+	build v_$v "$OUT/src-$v" $F
+	B=$B,v_$v
+done
 $CC -O2 -I"$TOP" "$HERE/mkstream.c" "$TOP"/lib/*.c "$TOP"/lib/x86/*.c -o "$OUT/bin/mkstream"
 SIL="dickens mozilla mr nci ooffice osdb reymont samba sao webster x-ray xml"
 LV="6 1 12"; [ $ON = 1 ] || LV=6
@@ -46,5 +55,5 @@ export BENCH_CPU=${BENCH_CPU:-2}
 for l in $LV; do
 	files=in/*; [ $l = 12 ] && files=$(for f in $SIL; do echo in/$f; done)
 	echo "== L$l $(uptime)" | tee -a res/bench.txt
-	python3 tools/abn.py -o res/L$l.json -r ${ROUNDS:-5} -n 5 -ref master -b master,old,new -s .L$l.c0 $files | tee -a res/bench.txt
+	python3 tools/abn.py -o res/L$l.json -r ${ROUNDS:-5} -n 5 -ref master -b $B -s .L$l.c0 $files | tee -a res/bench.txt
 done
