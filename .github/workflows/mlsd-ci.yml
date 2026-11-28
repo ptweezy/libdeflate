@@ -10,7 +10,8 @@ on:
 permissions:
   contents: read
 env:
-  PADS: "0 32"
+  PADS: "0 16 32 48"
+  ROUNDS: 2
 concurrency:
   group: mlsd-ci-${{ github.ref }}
   cancel-in-progress: true
