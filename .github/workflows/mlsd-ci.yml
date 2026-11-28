@@ -1,0 +1,92 @@
+name: mlsd-ci
+# Test only: time master and the versions $VERS of the lanes on the runners'
+# CPUs at the code placements $PADS (scripts/mlsd_ci/run_ab.sh); clang 18 binaries
+# are built once on Ubuntu 24.04 and timed on Ubuntu 22.04 and 24.04 with the
+# same builds by the runner's clang or gcc.  Not for upstream.
+on:
+  push:
+    branches: ['mlsd-ci*']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  PADS: "0 16 32 48"
+  ROUNDS: 2
+  VERS: "old=20bde82 mid=ef38249 new=."
+  NVERS: "old=20bde82 new=."
+concurrency:
+  group: mlsd-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/mlsd_ci/inputs.sh "$RUNNER_TEMP/abin"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+        retention-days: 3
+        compression-level: 1
+  build18:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: Build (clang 18, static)
+      env:
+        CC: clang
+      run: bash scripts/mlsd_ci/run_ab.sh -build "$RUNNER_TEMP/bin18"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: bin-c18
+        path: ${{ runner.temp }}/bin18
+        retention-days: 3
+  bench:
+    needs: [inputs, build18]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { name: x22-1, runner: ubuntu-22.04, pre: bin-c18, cc: clang }
+        - { name: x22-2, runner: ubuntu-22.04, pre: bin-c18, cc: clang }
+        - { name: x22-3, runner: ubuntu-22.04, pre: bin-c18, cc: clang }
+        - { name: x22-4, runner: ubuntu-22.04, pre: bin-c18, cc: clang }
+        - { name: x22-5, runner: ubuntu-22.04, pre: bin-c18, cc: clang }
+        - { name: x24-1, runner: ubuntu-24.04, pre: bin-c18, cc: gcc }
+        - { name: x24-2, runner: ubuntu-24.04, pre: bin-c18, cc: gcc }
+        - { name: x24-3, runner: ubuntu-24.04, pre: bin-c18, cc: gcc }
+        - { name: x24-4, runner: ubuntu-24.04, pre: bin-c18, cc: gcc }
+        - { name: x24-5, runner: ubuntu-24.04, pre: bin-c18, cc: gcc }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - uses: actions/download-artifact@v8
+      with:
+        name: ab-inputs
+        path: ${{ runner.temp }}/abin
+    - uses: actions/download-artifact@v8
+      if: matrix.pre != ''
+      with:
+        name: ${{ matrix.pre }}
+        path: ${{ runner.temp }}/pre
+    - name: Benchmark (Silesia + enwik8)
+      env:
+        CC: ${{ matrix.cc || 'cc' }}
+        NATIVE: 1
+      run: bash scripts/mlsd_ci/run_ab.sh "$RUNNER_TEMP/abin" "$RUNNER_TEMP/bench" ${{ matrix.pre != '' && '"$RUNNER_TEMP/pre"' || '' }}
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: bench-${{ matrix.name }}
+        path: ${{ runner.temp }}/bench/res
+        if-no-files-found: warn
