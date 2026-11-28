@@ -1,0 +1,86 @@
+name: r8-mac
+# Test-only: interleaved timing of the commits below the test-only one on
+# hosted macOS arm64 runners (Apple clang), with scripts/r8_time/abp.c: m0 =
+# upstream master (d956123), f1-f7 = PR 478's commits.  Not for upstream.
+on:
+  push:
+    branches: ['r8-mac*']
+permissions:
+  contents: read
+concurrency:
+  group: r8-mac-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  REFS: m0:d956123 f1:96d4484 f2:34bd549 f3:aa407ba f4:e92ff50 f5:c8444ab f6:2c2b599 f7:99e8152
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+    - name: Inputs
+      run: bash scripts/r8_time/inputs.sh "$RUNNER_TEMP/r8in"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: r8-mac-inputs
+        path: ${{ runner.temp }}/r8in
+        retention-days: 3
+        compression-level: 1
+  time:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+        shard: [1, 2, 3]
+    name: ${{ matrix.os }}-arm64-${{ matrix.shard }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 12
+    - uses: actions/download-artifact@v8
+      with:
+        name: r8-mac-inputs
+        path: ${{ runner.temp }}/r8in
+    - name: Build
+      run: |
+        W=$RUNNER_TEMP/w
+        mkdir -p "$W"
+        for t in $REFS; do
+          n=${t%%:*}; r=${t#*:}
+          git worktree add --detach "$W/src-$n" "$r"
+          cmake -S "$W/src-$n" -B "$W/b-$n" -DCMAKE_BUILD_TYPE=Release \
+            -DLIBDEFLATE_BUILD_STATIC_LIB=OFF -DLIBDEFLATE_BUILD_GZIP=OFF > /dev/null
+          cmake --build "$W/b-$n" -j4 > /dev/null
+          ls -l "$W/b-$n"/libdeflate*.dylib
+        done
+        cc -O2 -Wall -o "$W/abp" scripts/r8_time/abp.c
+        sysctl -n machdep.cpu.brand_string
+        cc --version | head -1
+    - name: Time
+      run: |
+        W=$RUNNER_TEMP/w
+        IN=$RUNNER_TEMP/r8in
+        LIBS=
+        for t in $REFS; do LIBS="$LIBS $W/b-${t%%:*}/libdeflate.dylib"; done
+        mkdir -p res
+        sysctl -n machdep.cpu.brand_string > res/cpu.txt
+        cc --version | head -1 > res/cc.txt
+        echo "$REFS" > res/refs.txt
+        run() {  # LEVEL CHUNK REPS
+          echo "=== L$1 chunk $2" | tee -a res/res.txt
+          "$W/abp" -l "$1" -s "$2" -r "$3" $LIBS -- $IN/real/* | tee -a res/res.txt
+        }
+        for c in 1:333 1:1024 1:4096 6:333 6:1024 6:4096 12:333 12:1024 12:4096; do
+          run "${c%%:*}" "${c#*:}" 9
+        done
+        for c in 1:0 6:0 12:0; do
+          run "${c%%:*}" "${c#*:}" 5
+        done
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: r8-mac-res-${{ matrix.os }}-${{ matrix.shard }}
+        path: res
