@@ -194,8 +194,9 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 	s32 cur_node_2;
 #endif
 	const u8 *matchptr;
-	mf_pos_t *pending_lt_ptr, *pending_gt_ptr;
-	u32 best_lt_len, best_gt_len;
+	/* Indexed by 'lt': [1] is the "less than" side, [0] the "greater than" */
+	mf_pos_t *pending[2];
+	u32 best_side_len[2];
 	u32 len, prev_len, start;
 	const u8 *in_base_start, *in_next_start;
 	u32 best_len = 3;
@@ -240,17 +241,17 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 	cur_node = mf->hash4_tab[hash4];
 	mf->hash4_tab[hash4] = cur_pos;
 
-	pending_lt_ptr = bt_left_child(mf, cur_pos);
-	pending_gt_ptr = bt_right_child(mf, cur_pos);
+	pending[1] = bt_left_child(mf, cur_pos);
+	pending[0] = bt_right_child(mf, cur_pos);
 
 	if (cur_node <= cutoff) {
-		*pending_lt_ptr = MATCHFINDER_INITVAL;
-		*pending_gt_ptr = MATCHFINDER_INITVAL;
+		*pending[1] = MATCHFINDER_INITVAL;
+		*pending[0] = MATCHFINDER_INITVAL;
 		return lz_matchptr;
 	}
 
-	best_lt_len = 0;
-	best_gt_len = 0;
+	best_side_len[0] = 0;
+	best_side_len[1] = 0;
 	len = 0;
 	prev_len = 0;
 	start = 0;
@@ -351,8 +352,8 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 			best_len = MAX(best_len, len);
 		}
 		if (unlikely(len >= nice_len)) {
-			*pending_lt_ptr = left_child;
-			*pending_gt_ptr = right_child;
+			*pending[1] = left_child;
+			*pending[0] = right_child;
 			return lz_matchptr;
 		}
 
@@ -362,21 +363,19 @@ bt_matchfinder_advance_one_byte(struct bt_matchfinder * const mf,
 		 * and continue to its right child; otherwise link it into the
 		 * "greater than" side and continue to its left child.
 		 */
-		*(lt ? pending_lt_ptr : pending_gt_ptr) = cur_node;
-		pending_lt_ptr = lt ? &children[1] : pending_lt_ptr;
-		pending_gt_ptr = lt ? pending_gt_ptr : &children[0];
-		best_lt_len = lt ? len : best_lt_len;
-		best_gt_len = lt ? best_gt_len : len;
+		*pending[lt] = cur_node;
+		pending[lt] = lt ? &children[1] : &children[0];
+		best_side_len[lt] = len;
 		cur_node = next_node;
 		start = prev_len;
 		in_base_start = in_base + start;
 		in_next_start = in_next + start;
-		len = MIN(best_lt_len, best_gt_len);
+		len = MIN(best_side_len[0], best_side_len[1]);
 		prev_len = len;
 
 		if (cur_node <= cutoff || !--depth_remaining) {
-			*pending_lt_ptr = MATCHFINDER_INITVAL;
-			*pending_gt_ptr = MATCHFINDER_INITVAL;
+			*pending[1] = MATCHFINDER_INITVAL;
+			*pending[0] = MATCHFINDER_INITVAL;
 			return lz_matchptr;
 		}
 	}
