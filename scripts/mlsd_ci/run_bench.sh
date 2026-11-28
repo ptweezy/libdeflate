@@ -27,17 +27,17 @@ build() { # name srcdir flags...
 	local name=$1 src=$2; shift 2
 	$CC -O2 -DNDEBUG -std=gnu11 -I"$src" "$@" "$HERE/dbench.c" "$src"/lib/*.c "$src"/lib/$ARCH/*.c -o "$OUT/bin/dbench_$name"
 }
-# new = this tree as it ships; f = the lanes on any CPU (4 lanes, executed
-# after each round); f2, f3, f5 = 2, 3, 5 lanes; f6i = 6 lanes with each
-# round's records executed during the next round (the Apple arm64 layout);
-# all with the x86_64 gate.
-G="-DMLSD_TEST_ALWAYS_USABLE -DMLSD_GATE32=6 -DMLSD_GATE_LEN=18"
+# new = this tree as it ships; f = the lanes on any CPU (4 lanes); f5 to f8
+# = 5 to 8 lanes, all executed after each round, with the x86_64 gate.
+G="-DMLSD_TEST_ALWAYS_USABLE -DMLSD_INTERLEAVE=0 -DMLSD_GATE32=6 -DMLSD_GATE_LEN=18"
 build master "$OUT/src-master"
 build new "$TOP"
 build f "$TOP" -DMLSD_TEST_ALWAYS_USABLE
-for v in 2:0:f2 3:0:f3 5:0:f5 6:1:f6i; do
-	IFS=: read -r n il name <<< "$v"
-	build $name "$TOP" $G -DMLSD_LANES=$n -DMLSD_INTERLEAVE=$il
+for n in 5 6 7 8; do
+	build f$n "$TOP" $G -DMLSD_LANES=$n
+	$CC -O2 -DNDEBUG -std=gnu11 -I"$TOP" $G -DMLSD_LANES=$n -c "$TOP/lib/deflate_decompress.c" -o "$OUT/dd_f$n.o"
+	{ objdump -d --no-show-raw-insn -M intel "$OUT/dd_f$n.o" 2>/dev/null || true; } | awk '/<decompress_multilane_bmi2>:/{p=1} p&&/^$/{exit} p' > "$OUT/ml_f$n.s" || true
+	echo "f$n: $(python3 "$HERE/loop.py" "$OUT/ml_f$n.s" || true)" | tee -a "$OUT/res/loop.txt"
 done
 $CC -O2 -DNDEBUG -std=gnu11 -I"$TOP" -c "$TOP/lib/deflate_decompress.c" -o "$OUT/dd_new.o"
 { objdump -d --no-show-raw-insn -M intel "$OUT/dd_new.o" 2>/dev/null || true; } | awk '/<decompress_multilane_bmi2>:/{p=1} p&&/^$/{exit} p' > "$OUT/ml_new.s" || true
@@ -53,7 +53,7 @@ cd "$OUT"
 export BENCH_CPU=${BENCH_CPU:-2}
 for l in 6 1; do
 	echo "== L$l $(uptime)" | tee -a res/bench.txt
-	python3 tools/abn.py -o res/L$l.json -r 5 -n 5 -ref master -b master,new,f,f2,f3,f5,f6i -s .L$l.c0 in/* | tee -a res/bench.txt
+	python3 tools/abn.py -o res/L$l.json -r 5 -n 5 -ref master -b master,new,f,f5,f6,f7,f8 -s .L$l.c0 in/* | tee -a res/bench.txt
 done
 echo "== L12 $(uptime)" | tee -a res/bench.txt
-python3 tools/abn.py -o res/L12.json -r 5 -n 5 -ref master -b master,new,f,f2,f3,f5,f6i -s .L12.c0 $(for f in $SIL; do echo in/$f; done) | tee -a res/bench.txt
+python3 tools/abn.py -o res/L12.json -r 5 -n 5 -ref master -b master,new,f,f5,f6,f7,f8 -s .L12.c0 $(for f in $SIL; do echo in/$f; done) | tee -a res/bench.txt
