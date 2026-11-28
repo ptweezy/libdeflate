@@ -20,7 +20,7 @@ git -C "$TOP" archive aa5181e | tar -x -C "$OUT/src-master"
 	else
 		sysctl -n machdep.cpu.brand_string hw.l1dcachesize hw.ncpu || true
 	fi
-	$CC --version | head -1
+	$CC --version | sed -n 1p
 } > "$OUT/res/system.txt" 2>&1
 cat "$OUT/res/system.txt"
 build() { # name srcdir flags...
