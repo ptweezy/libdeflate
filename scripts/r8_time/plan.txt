@@ -1,0 +1,16 @@
+# r8_time plan: PR 486 follow-up.  m0 = 0079686 (master), f1 = 36458ac
+# (_byteswap_*() made intrinsic for MSVC; same gcc/clang code as m0), f2 =
+# d9adb5c (PR head), f3 = 7234d88 (pending links indexed by the comparison
+# result), f4 = f3 with &children[lt] in place of the select.  Levels 10 and 12 on whole 2 MiB files.
+seedbase 48601
+series 4
+timeout 150
+
+group l10 ubuntu-24.04     g2 4 16 real 10:0:3:2:plc2
+group l10 ubuntu-24.04     c2 4 16 real 10:0:3:2:plc2
+group l12 ubuntu-24.04     g2 4 16 real 12:0:3:1:plc2
+group l12 ubuntu-24.04     c2 4 16 real 12:0:3:1:plc2
+group l10 ubuntu-24.04-arm g2 2 16 real 10:0:3:2:plc2
+group l10 ubuntu-24.04-arm c2 2 16 real 10:0:3:2:plc2
+group l12 ubuntu-24.04-arm g2 2 16 real 12:0:3:1:plc2
+group l12 ubuntu-24.04-arm c2 2 16 real 12:0:3:1:plc2
