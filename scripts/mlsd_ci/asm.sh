@@ -31,7 +31,7 @@ for v in base $(ls "$HERE/variants" 2> /dev/null | sed -n 's/\.\(patch\|flags\)$
 		case $c in clang*) $c -O2 -DNDEBUG -std=gnu11 $VF -I"$src" -c "$src/lib/deflate_decompress.c" -o /dev/null -Rpass-missed=regalloc 2> "$o/regalloc.txt" ;; esac
 		objdump -d --no-show-raw-insn -M intel "$o/dd.o" > "$o/dd.dis"
 		for fn in $FNS; do
-			awk "/<$fn>:/{p=1} p&&/^\$/{exit} p" "$o/dd.dis" > "$o/$fn.s"
+			awk "/<$fn(\\.[a-z]+\\.[0-9]+)*>:/{p=1} p&&/^\$/{exit} p" "$o/dd.dis" > "$o/$fn.s"
 		done
 		echo "$v $c: $(python3 "$HERE/loop.py" "$o/decompress_multilane_bmi2.s" 2>&1 | head -1), size $(grep -c . "$o/decompress_multilane_bmi2.s") / fastloop $(grep -c . "$o/decompress_fastloop_unchecked_bmi2.s")" | tee -a "$OUT/out/loop.txt"
 		rm -f "$o/dd.o"

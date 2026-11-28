@@ -1,8 +1,6 @@
-diff --git a/lib/decompress_multilane.h b/lib/decompress_multilane.h
-index f167370..5144798 100644
---- a/lib/decompress_multilane.h
-+++ b/lib/decompress_multilane.h
-@@ -396,11 +396,12 @@ do {									\
+--- a/lib/decompress_multilane.h	2026-11-27 21:46:54.335662730 -0500
++++ b/lib/decompress_multilane.h	2026-11-27 21:46:54.355257310 -0500
+@@ -396,11 +396,12 @@
  	eob |= (((entry) >> 50) & 0x1FF) == MLSD_EOB_LEN;		\
  } while (0)
  
@@ -18,7 +16,7 @@ index f167370..5144798 100644
  #endif
  
  /*
-@@ -423,8 +424,7 @@ do {									\
+@@ -423,8 +424,7 @@
  	e1_ += (u32)e2_;						\
  	*(rp) = e1_ + (((w1_ >> (e2_ & 63)) & (e2_ >> 32)) << 16);	\
  	put_unaligned_le16((u16)(p), (u8 *)(rp));			\
@@ -28,3 +26,12 @@ index f167370..5144798 100644
  } while (0)
  
  /*
+@@ -561,7 +561,7 @@
+ 				    margin;
+ 		u64 p[MLSD_LANES];
+ 		bool more = true;
+-		unsigned n, cnt;
++		size_t n, cnt;
+ 		int i;
+ 
+ 		if (end_pos + (MLSD_LANES - 1) * dist > in_limit) {
