@@ -574,7 +574,7 @@ ADD_SUFFIX(decompress_multilane)(struct fastloop_ctx * restrict ctx,
 		for (n = 0, cnt = nsteps; ; cnt += MLSD_EXTEND) {
 			unsigned lo = 0;
 
-			for (; n < cnt; n++) {
+			for (; likely(n < cnt); n++) {
 				MLSD_UNROLL_LOOP
 				for (i = 0; i < MLSD_LANES; i++)
 					MLSD_STEP(in, p[i], &recs[n][i]);
