@@ -386,7 +386,8 @@ do {									\
  * LIBDEFLATE_NO_MLSD to leave it out.
  */
 #if (defined(ARCH_X86_64) || \
-     (defined(ARCH_ARM64) && defined(__APPLE__) && !defined(FREESTANDING))) && \
+     (defined(ARCH_ARM64) && ((defined(__APPLE__) && !defined(FREESTANDING)) || \
+			      defined(MLSD_TEST_ALWAYS_USABLE)))) && \
 	(defined(__clang__) || GCC_PREREQ(8, 1)) && \
 	!defined(LIBDEFLATE_NO_MLSD)
 #  define MLSD_ENABLED		1
