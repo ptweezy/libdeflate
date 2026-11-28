@@ -38,9 +38,9 @@ jobs:
     - uses: actions/checkout@v6
       with:
         fetch-depth: 0
-    - name: Build (clang 18, static)
+    - name: Build (clang 16, static)
       env:
-        CC: clang
+        CC: clang-16
       run: bash scripts/mlsd_ci/run_ab.sh -build "$RUNNER_TEMP/bin18"
     - uses: actions/upload-artifact@v7
       with:
@@ -82,7 +82,7 @@ jobs:
     - name: Benchmark (Silesia + enwik8)
       env:
         CC: ${{ matrix.cc || 'cc' }}
-        NATIVE: 1
+        NATIVE: 0
       run: bash scripts/mlsd_ci/run_ab.sh "$RUNNER_TEMP/abin" "$RUNNER_TEMP/bench" ${{ matrix.pre != '' && '"$RUNNER_TEMP/pre"' || '' }}
     - uses: actions/upload-artifact@v7
       if: always()
